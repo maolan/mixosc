@@ -1,8 +1,5 @@
-use crate::reference::ReferenceFiles;
-use std::env;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket};
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 pub const X32_DEFAULT_PORT: u16 = 10023;
@@ -11,9 +8,14 @@ pub const X32_BROADCAST_ADDR: SocketAddr =
 const INFO_REQUEST: &[u8] = b"/info\0\0\0,\0\0\0";
 const STATUS_REQUEST: &[u8] = b"/status\0,\0\0\0";
 const XINFO_REQUEST: &[u8] = b"/xinfo\0\0,\0\0\0";
+pub const XREMOTE_REQUEST: &[u8] = b"/xremote\0\0\0,\0\0\0";
 const XINFO_RESPONSE: &str = "/xinfo";
 const INFO_RESPONSE: &str = "/info";
 const STATUS_RESPONSE: &str = "/status";
+const FADER_RESPONSE_SUFFIX: &str = "/mix/fader";
+const MUTE_RESPONSE_SUFFIX: &str = "/mix/on";
+const INPUT_METERS_REQUEST: &str = "/meters/0";
+const INPUT_METERS_ALIAS: &str = "meters/0";
 
 #[derive(Debug, Clone)]
 pub struct ConnectionProbe {
@@ -172,6 +174,116 @@ impl ConnectionProbe {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct FaderBankProbe {
+    target: SocketAddr,
+    bind_addr: SocketAddr,
+    timeout: Duration,
+}
+
+impl FaderBankProbe {
+    pub fn new(target: SocketAddr) -> Self {
+        Self {
+            target,
+            bind_addr: SocketAddr::from(([0, 0, 0, 0], 0)),
+            timeout: Duration::from_millis(400),
+        }
+    }
+
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    pub fn with_bind_addr(mut self, bind_addr: SocketAddr) -> Self {
+        self.bind_addr = bind_addr;
+        self
+    }
+
+    pub fn load(&self, targets: &[FaderTarget]) -> Result<Vec<StripFader>, ProbeError> {
+        let socket = UdpSocket::bind(self.bind_addr).map_err(ProbeError::Bind)?;
+        socket
+            .set_read_timeout(Some(self.timeout))
+            .map_err(ProbeError::Configure)?;
+        socket
+            .set_write_timeout(Some(self.timeout))
+            .map_err(ProbeError::Configure)?;
+
+        let mut faders = Vec::with_capacity(targets.len());
+
+        for &target in targets {
+            let path = fader_path(target);
+            let request = osc_query(&path);
+            socket
+                .send_to(&request, self.target)
+                .map_err(ProbeError::Send)?;
+
+            let mut buffer = [0_u8; 2048];
+            let (received, _) = socket.recv_from(&mut buffer).map_err(ProbeError::Receive)?;
+            let packet = &buffer[..received];
+            let Some((path, value)) = parse_fader_value(packet) else {
+                return Err(ProbeError::Protocol(format!(
+                    "unexpected OSC reply while reading {target}"
+                )));
+            };
+
+            if path != fader_path(target) {
+                return Err(ProbeError::Protocol(format!(
+                    "received fader reply for '{path}' while reading {target}"
+                )));
+            }
+
+            faders.push(StripFader { target, value });
+        }
+
+        Ok(faders)
+    }
+
+    pub fn set(&self, target: FaderTarget, value: f32) -> Result<(), ProbeError> {
+        let socket = UdpSocket::bind(self.bind_addr).map_err(ProbeError::Bind)?;
+        socket
+            .set_write_timeout(Some(self.timeout))
+            .map_err(ProbeError::Configure)?;
+
+        let packet = osc_float_message(&fader_path(target), value.clamp(0.0, 1.0));
+        socket.send_to(&packet, self.target).map_err(ProbeError::Send)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaderTarget {
+    Channel(u8),
+    Aux(u8),
+}
+
+impl std::fmt::Display for FaderTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Channel(channel) => write!(f, "channel {channel:02}"),
+            Self::Aux(aux) => write!(f, "aux {aux:02}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StripFader {
+    pub target: FaderTarget,
+    pub value: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StripMute {
+    pub target: FaderTarget,
+    pub on: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StripMeter {
+    pub target: FaderTarget,
+    pub level_linear: f32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveredMixer {
     pub addr: SocketAddr,
@@ -204,6 +316,133 @@ pub enum ProbeError {
     Configure(io::Error),
     Send(io::Error),
     Receive(io::Error),
+    Protocol(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct MuteBankProbe {
+    target: SocketAddr,
+    bind_addr: SocketAddr,
+    timeout: Duration,
+}
+
+impl MuteBankProbe {
+    pub fn new(target: SocketAddr) -> Self {
+        Self {
+            target,
+            bind_addr: SocketAddr::from(([0, 0, 0, 0], 0)),
+            timeout: Duration::from_millis(400),
+        }
+    }
+
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    pub fn with_bind_addr(mut self, bind_addr: SocketAddr) -> Self {
+        self.bind_addr = bind_addr;
+        self
+    }
+
+    pub fn load(&self, targets: &[FaderTarget]) -> Result<Vec<StripMute>, ProbeError> {
+        let socket = UdpSocket::bind(self.bind_addr).map_err(ProbeError::Bind)?;
+        socket
+            .set_read_timeout(Some(self.timeout))
+            .map_err(ProbeError::Configure)?;
+        socket
+            .set_write_timeout(Some(self.timeout))
+            .map_err(ProbeError::Configure)?;
+
+        let mut mutes = Vec::with_capacity(targets.len());
+
+        for &target in targets {
+            let path = mute_path(target);
+            let request = osc_query(&path);
+            socket
+                .send_to(&request, self.target)
+                .map_err(ProbeError::Send)?;
+
+            let mut buffer = [0_u8; 2048];
+            let (received, _) = socket.recv_from(&mut buffer).map_err(ProbeError::Receive)?;
+            let packet = &buffer[..received];
+            let Some((reply_path, on)) = parse_switch_value(packet) else {
+                return Err(ProbeError::Protocol(format!(
+                    "unexpected OSC reply while reading mute for {target}"
+                )));
+            };
+
+            if reply_path != path {
+                return Err(ProbeError::Protocol(format!(
+                    "received mute reply for '{reply_path}' while reading {target}"
+                )));
+            }
+
+            mutes.push(StripMute { target, on });
+        }
+
+        Ok(mutes)
+    }
+
+    pub fn set(&self, target: FaderTarget, on: bool) -> Result<(), ProbeError> {
+        let socket = UdpSocket::bind(self.bind_addr).map_err(ProbeError::Bind)?;
+        socket
+            .set_write_timeout(Some(self.timeout))
+            .map_err(ProbeError::Configure)?;
+
+        let packet = osc_int_message(&mute_path(target), i32::from(on));
+        socket.send_to(&packet, self.target).map_err(ProbeError::Send)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MeterBankProbe {
+    target: SocketAddr,
+    bind_addr: SocketAddr,
+    timeout: Duration,
+}
+
+impl MeterBankProbe {
+    pub fn new(target: SocketAddr) -> Self {
+        Self {
+            target,
+            bind_addr: SocketAddr::from(([0, 0, 0, 0], 0)),
+            timeout: Duration::from_millis(400),
+        }
+    }
+
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    pub fn with_bind_addr(mut self, bind_addr: SocketAddr) -> Self {
+        self.bind_addr = bind_addr;
+        self
+    }
+
+    pub fn load_inputs(&self) -> Result<Vec<StripMeter>, ProbeError> {
+        let socket = self.bind_socket()?;
+        let request = osc_meter_group_request(INPUT_METERS_REQUEST);
+        socket
+            .send_to(&request, self.target)
+            .map_err(ProbeError::Send)?;
+        let mut buffer = [0_u8; 4096];
+        let (received, _) = socket.recv_from(&mut buffer).map_err(ProbeError::Receive)?;
+        parse_input_meter_packet(&buffer[..received])
+    }
+
+    fn bind_socket(&self) -> Result<UdpSocket, ProbeError> {
+        let socket = UdpSocket::bind(self.bind_addr).map_err(ProbeError::Bind)?;
+        socket
+            .set_read_timeout(Some(self.timeout))
+            .map_err(ProbeError::Configure)?;
+        socket
+            .set_write_timeout(Some(self.timeout))
+            .map_err(ProbeError::Configure)?;
+        Ok(socket)
+    }
 }
 
 impl std::fmt::Display for ProbeError {
@@ -213,6 +452,7 @@ impl std::fmt::Display for ProbeError {
             Self::Configure(error) => write!(f, "failed to configure UDP socket: {error}"),
             Self::Send(error) => write!(f, "failed to send probe to mixer: {error}"),
             Self::Receive(error) => write!(f, "failed to receive mixer response: {error}"),
+            Self::Protocol(error) => write!(f, "invalid mixer protocol data: {error}"),
         }
     }
 }
@@ -227,18 +467,6 @@ pub fn parse_target(input: &str) -> Result<SocketAddr, ParseTargetError> {
     let candidate = format!("{input}:{X32_DEFAULT_PORT}");
     let mut resolved = candidate.to_socket_addrs()?;
     resolved.next().ok_or(ParseTargetError::NoResolvedAddress)
-}
-
-pub fn default_reference_dir() -> PathBuf {
-    let home = env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("~"));
-
-    home.join("Files").join("OSC")
-}
-
-pub fn default_reference_files() -> ReferenceFiles {
-    ReferenceFiles::new(default_reference_dir())
 }
 
 #[derive(Debug)]
@@ -289,9 +517,198 @@ fn parse_discovered_mixer(packet: &[u8], responder: SocketAddr) -> Option<Discov
     })
 }
 
+fn fader_path(target: FaderTarget) -> String {
+    match target {
+        FaderTarget::Channel(channel) => format!("/ch/{channel:02}/mix/fader"),
+        FaderTarget::Aux(aux) => format!("/auxin/{aux:02}/mix/fader"),
+    }
+}
+
+fn mute_path(target: FaderTarget) -> String {
+    match target {
+        FaderTarget::Channel(channel) => format!("/ch/{channel:02}/mix/on"),
+        FaderTarget::Aux(aux) => format!("/auxin/{aux:02}/mix/on"),
+    }
+}
+
 fn osc_address(packet: &[u8]) -> Option<&str> {
     let end = packet.iter().position(|byte| *byte == 0)?;
     std::str::from_utf8(&packet[..end]).ok()
+}
+
+fn osc_meter_group_request(meter_id: &str) -> Vec<u8> {
+    let mut packet = osc_string("/meters");
+    packet.extend_from_slice(b",s\0\0");
+    packet.extend_from_slice(&osc_string(meter_id));
+    packet
+}
+
+pub fn batchsubscribe_meter_request(
+    alias: &str,
+    meter_id: &str,
+    arg0: i32,
+    arg1: i32,
+    time_factor: i32,
+) -> Vec<u8> {
+    let mut packet = osc_string("/batchsubscribe");
+    packet.extend_from_slice(b",ssiii\0\0");
+    packet.extend_from_slice(&osc_string(alias));
+    packet.extend_from_slice(&osc_string(meter_id));
+    packet.extend_from_slice(&arg0.to_be_bytes());
+    packet.extend_from_slice(&arg1.to_be_bytes());
+    packet.extend_from_slice(&time_factor.to_be_bytes());
+    packet
+}
+
+pub fn renew_request(alias: &str) -> Vec<u8> {
+    let mut packet = osc_string("/renew");
+    packet.extend_from_slice(b",s\0\0");
+    packet.extend_from_slice(&osc_string(alias));
+    packet
+}
+
+fn osc_query(address: &str) -> Vec<u8> {
+    osc_string(address)
+}
+
+fn osc_float_message(address: &str, value: f32) -> Vec<u8> {
+    let mut packet = osc_string(address);
+    packet.extend_from_slice(b",f\0\0");
+    packet.extend_from_slice(&value.to_bits().to_be_bytes());
+    packet
+}
+
+fn osc_int_message(address: &str, value: i32) -> Vec<u8> {
+    let mut packet = osc_string(address);
+    packet.extend_from_slice(b",i\0\0");
+    packet.extend_from_slice(&value.to_be_bytes());
+    packet
+}
+
+fn osc_string(value: &str) -> Vec<u8> {
+    let mut bytes = value.as_bytes().to_vec();
+    bytes.push(0);
+    while bytes.len() % 4 != 0 {
+        bytes.push(0);
+    }
+    bytes
+}
+
+fn parse_fader_value(packet: &[u8]) -> Option<(String, f32)> {
+    let path = osc_address(packet)?;
+    if !path.ends_with(FADER_RESPONSE_SUFFIX) {
+        return None;
+    }
+
+    let mut offset = osc_padded_len(packet)?;
+    let type_tag_end = packet.get(offset..)?.iter().position(|byte| *byte == 0)?;
+    let type_tag = std::str::from_utf8(packet.get(offset..offset + type_tag_end)?).ok()?;
+    let type_tag_len = osc_padded_len(packet.get(offset..)?)?;
+    offset += type_tag_len;
+
+    if type_tag != ",f" {
+        return None;
+    }
+
+    let value_bytes: [u8; 4] = packet.get(offset..offset + 4)?.try_into().ok()?;
+    Some((path.to_owned(), f32::from_bits(u32::from_be_bytes(value_bytes))))
+}
+
+fn parse_switch_value(packet: &[u8]) -> Option<(String, bool)> {
+    let path = osc_address(packet)?;
+    if !path.ends_with(MUTE_RESPONSE_SUFFIX) {
+        return None;
+    }
+
+    let mut offset = osc_padded_len(packet)?;
+    let type_tag_end = packet.get(offset..)?.iter().position(|byte| *byte == 0)?;
+    let type_tag = std::str::from_utf8(packet.get(offset..offset + type_tag_end)?).ok()?;
+    let type_tag_len = osc_padded_len(packet.get(offset..)?)?;
+    offset += type_tag_len;
+
+    if type_tag != ",i" {
+        return None;
+    }
+
+    let value_bytes: [u8; 4] = packet.get(offset..offset + 4)?.try_into().ok()?;
+    Some((path.to_owned(), i32::from_be_bytes(value_bytes) != 0))
+}
+
+pub fn parse_input_meter_packet(packet: &[u8]) -> Result<Vec<StripMeter>, ProbeError> {
+    let path = osc_address(packet)
+        .ok_or_else(|| ProbeError::Protocol("meter reply missing OSC address".to_owned()))?;
+    if path != INPUT_METERS_REQUEST && path != INPUT_METERS_ALIAS {
+        return Err(ProbeError::Protocol(format!(
+            "unexpected meter reply path '{path}'"
+        )));
+    }
+
+    let mut offset = osc_padded_len(packet)
+        .ok_or_else(|| ProbeError::Protocol("meter reply has invalid OSC address".to_owned()))?;
+    let type_tag_end = packet[offset..]
+        .iter()
+        .position(|byte| *byte == 0)
+        .ok_or_else(|| ProbeError::Protocol("meter reply missing OSC type tag".to_owned()))?;
+    let type_tag = std::str::from_utf8(&packet[offset..offset + type_tag_end])
+        .map_err(|_| ProbeError::Protocol("meter reply type tag is not UTF-8".to_owned()))?;
+    if type_tag != ",b" {
+        return Err(ProbeError::Protocol(format!(
+            "unexpected meter reply type tag '{type_tag}'"
+        )));
+    }
+    offset += osc_padded_len(&packet[offset..])
+        .ok_or_else(|| ProbeError::Protocol("meter reply has invalid type tag".to_owned()))?;
+
+    let blob_len = read_be_u32(packet, offset)? as usize;
+    offset += 4;
+    let blob = packet
+        .get(offset..offset + blob_len)
+        .ok_or_else(|| ProbeError::Protocol("meter blob length exceeds packet size".to_owned()))?;
+    if blob.len() < 4 {
+        return Err(ProbeError::Protocol(
+            "meter blob is missing float-count header".to_owned(),
+        ));
+    }
+
+    let float_count = u32::from_le_bytes(
+        blob[0..4]
+            .try_into()
+            .map_err(|_| ProbeError::Protocol("meter float-count size mismatch".to_owned()))?,
+    ) as usize;
+    let floats = &blob[4..];
+
+    if floats.len() < float_count * 4 {
+        return Err(ProbeError::Protocol(
+            "meter blob is shorter than advertised float count".to_owned(),
+        ));
+    }
+
+    let mut strips = Vec::with_capacity(40);
+    for index in 0..40 {
+        let target = if index < 32 {
+            FaderTarget::Channel((index + 1) as u8)
+        } else {
+            FaderTarget::Aux((index - 31) as u8)
+        };
+        let start = index * 4;
+        let bytes: [u8; 4] = floats[start..start + 4]
+            .try_into()
+            .map_err(|_| ProbeError::Protocol("meter float slice size mismatch".to_owned()))?;
+        strips.push(StripMeter {
+            target,
+            level_linear: f32::from_le_bytes(bytes),
+        });
+    }
+    Ok(strips)
+}
+
+fn read_be_u32(packet: &[u8], offset: usize) -> Result<u32, ProbeError> {
+    let bytes: [u8; 4] = packet
+        .get(offset..offset + 4)
+        .ok_or_else(|| ProbeError::Protocol("packet truncated while reading u32".to_owned()))?
+        .try_into()
+        .map_err(|_| ProbeError::Protocol("u32 slice size mismatch".to_owned()))?;
+    Ok(u32::from_be_bytes(bytes))
 }
 
 fn osc_strings(packet: &[u8]) -> Vec<String> {
@@ -372,5 +789,82 @@ mod tests {
         assert_eq!(mixer.name.as_deref(), Some("X32-024A-53"));
         assert_eq!(mixer.model.as_deref(), Some("X32"));
         assert_eq!(mixer.firmware.as_deref(), Some("3.04"));
+    }
+
+    #[test]
+    fn builds_query_packet_for_channel_fader() {
+        assert_eq!(
+            osc_query(&fader_path(FaderTarget::Channel(1))),
+            b"/ch/01/mix/fader\0\0\0\0".to_vec()
+        );
+    }
+
+    #[test]
+    fn parses_float_fader_reply() {
+        let packet = [
+            b"/ch/01/mix/fader\0\0\0\0".as_slice(),
+            b",f\0\0".as_slice(),
+            0.75_f32.to_bits().to_be_bytes().as_slice(),
+        ]
+        .concat();
+
+        let (path, value) = parse_fader_value(&packet).expect("should parse fader reply");
+        assert_eq!(path, "/ch/01/mix/fader");
+        assert!((value - 0.75).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn parses_int_mute_reply() {
+        let packet = osc_int_message("/auxin/05/mix/on", 0);
+
+        let (path, on) = parse_switch_value(&packet).expect("should parse mute reply");
+        assert_eq!(path, "/auxin/05/mix/on");
+        assert!(!on);
+    }
+
+    #[test]
+    fn builds_meter_request_packet() {
+        let packet = osc_meter_group_request(INPUT_METERS_REQUEST);
+        assert_eq!(&packet[..8], b"/meters\0");
+        assert_eq!(&packet[8..12], b",s\0\0");
+        assert_eq!(&packet[12..24], b"/meters/0\0\0\0");
+    }
+
+    #[test]
+    fn parses_input_meter_blob() {
+        let mut floats = Vec::new();
+        for i in 0..82 {
+            floats.extend_from_slice(&((i as f32) / 10.0).to_le_bytes());
+        }
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&(82_u32).to_le_bytes());
+        blob.extend_from_slice(&floats);
+
+        let mut packet = osc_string(INPUT_METERS_ALIAS);
+        packet.extend_from_slice(b",b\0\0");
+        packet.extend_from_slice(&(blob.len() as u32).to_be_bytes());
+        packet.extend_from_slice(&blob);
+
+        let meters = parse_input_meter_packet(&packet).expect("should parse input meter blob");
+        assert_eq!(meters.len(), 40);
+        assert_eq!(meters[0].target, FaderTarget::Channel(1));
+        assert_eq!(meters[31].target, FaderTarget::Channel(32));
+        assert_eq!(meters[32].target, FaderTarget::Aux(1));
+        assert_eq!(meters[39].target, FaderTarget::Aux(8));
+        assert!((meters[5].level_linear - 0.5).abs() < f32::EPSILON);
+        assert!((meters[35].level_linear - 3.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn builds_batchsubscribe_meter_request_packet() {
+        let packet = batchsubscribe_meter_request("meters/0", "/meters/0", 0, 0, 1);
+        assert_eq!(&packet[..16], b"/batchsubscribe\0");
+        assert_eq!(&packet[16..24], b",ssiii\0\0");
+    }
+
+    #[test]
+    fn builds_renew_request_packet() {
+        let packet = renew_request("meters/0");
+        assert_eq!(&packet[..8], b"/renew\0\0");
     }
 }
