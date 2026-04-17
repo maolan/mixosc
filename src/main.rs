@@ -12,7 +12,8 @@ use mixosc::{
     GainBankProbe, GainSource, MuteBankProbe, NameBankProbe, PanBankProbe, ProbeOutcome,
     ProbeResponse, SendBankProbe, SoloBankProbe, StripFader, StripGain, StripMeter, StripMute,
     StripName, StripPan, StripSend, StripSolo, XREMOTE_REQUEST, batchsubscribe_meter_request,
-    parse_console_update, parse_input_meter_packet, parse_target, renew_request,
+    parse_console_update, parse_input_meter_packet, parse_main_meter_packet, parse_target,
+    renew_request,
 };
 use std::env;
 use std::net::SocketAddr;
@@ -88,8 +89,11 @@ struct StatusApp {
     pans: [Option<f32>; STRIP_COUNT],
     faders: [Option<f32>; STRIP_COUNT],
     meters_db: [f32; STRIP_COUNT],
+    master_meters_db: [f32; 2],
     muted: [Option<bool>; STRIP_COUNT],
     soloed: [Option<bool>; STRIP_COUNT],
+    master_fader: Option<f32>,
+    master_muted: Option<bool>,
     status: ConnectionStatus,
     last_error: Option<String>,
 }
@@ -109,6 +113,7 @@ enum Message {
     SendChanged(usize, usize, f32),
     PanChanged(usize, f32),
     FaderChanged(usize, f32),
+    MasterFaderChanged(f32),
     NamesLoaded(Result<Vec<StripName>, String>),
     GainsLoaded(Result<Vec<StripGain>, String>),
     SendsLoaded(Result<Vec<StripSend>, String>),
@@ -119,7 +124,9 @@ enum Message {
     PanSetFinished(Result<(), String>),
     FaderSetFinished(Result<(), String>),
     MetersLoaded(Result<Vec<StripMeter>, String>),
+    MasterMetersLoaded(Result<[f32; 2], String>),
     MutePressed(usize),
+    MasterMutePressed,
     MutesLoaded(Result<Vec<StripMute>, String>),
     MuteSetFinished(Result<(), String>),
     SoloPressed(usize),
@@ -143,8 +150,11 @@ fn new() -> (StatusApp, Task<Message>) {
         pans: [None; STRIP_COUNT],
         faders: [None; STRIP_COUNT],
         meters_db: [-90.0; STRIP_COUNT],
+        master_meters_db: [-90.0, -90.0],
         muted: [None; STRIP_COUNT],
         soloed: [None; STRIP_COUNT],
+        master_fader: None,
+        master_muted: None,
         status: ConnectionStatus::Checking,
         last_error: None,
     };
@@ -191,6 +201,10 @@ fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                     }
                 }
                 Ok(ConsoleUpdate::Fader(strip)) => {
+                    if strip.target == FaderTarget::Main {
+                        app.master_fader = Some(strip.value);
+                        return Task::none();
+                    }
                     if let Some(index) = VISIBLE_STRIPS
                         .iter()
                         .position(|target| *target == strip.target)
@@ -218,6 +232,10 @@ fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                     }
                 }
                 Ok(ConsoleUpdate::Mute(strip)) => {
+                    if strip.target == FaderTarget::Main {
+                        app.master_muted = Some(!strip.on);
+                        return Task::none();
+                    }
                     if let Some(index) = VISIBLE_STRIPS
                         .iter()
                         .position(|target| *target == strip.target)
@@ -296,6 +314,14 @@ fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
             };
             let target = VISIBLE_STRIPS[index];
             spawn_set_fader(mixer_addr, target, value)
+        }
+        Message::MasterFaderChanged(value) => {
+            app.master_fader = Some(value);
+
+            let Some(mixer_addr) = app.mixer_addr else {
+                return Task::none();
+            };
+            spawn_set_fader(mixer_addr, FaderTarget::Main, value)
         }
         Message::NamesLoaded(result) => {
             match result {
@@ -377,6 +403,10 @@ fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
             match result {
                 Ok(faders) => {
                     for fader in faders {
+                        if fader.target == FaderTarget::Main {
+                            app.master_fader = Some(fader.value);
+                            continue;
+                        }
                         if let Some(index) = VISIBLE_STRIPS
                             .iter()
                             .position(|target| *target == fader.target)
@@ -435,6 +465,19 @@ fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
 
             Task::none()
         }
+        Message::MasterMetersLoaded(result) => {
+            match result {
+                Ok(levels) => {
+                    app.master_meters_db = [
+                        linear_meter_to_db(levels[0]),
+                        linear_meter_to_db(levels[1]),
+                    ];
+                }
+                Err(error) => app.last_error = Some(error),
+            }
+
+            Task::none()
+        }
         Message::MutePressed(index) => {
             let Some(mixer_addr) = app.mixer_addr else {
                 return Task::none();
@@ -447,10 +490,23 @@ fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
             }
             spawn_set_mute(mixer_addr, target, next_on)
         }
+        Message::MasterMutePressed => {
+            let Some(mixer_addr) = app.mixer_addr else {
+                return Task::none();
+            };
+            let currently_muted = app.master_muted.unwrap_or(false);
+            let next_on = currently_muted;
+            app.master_muted = Some(!next_on);
+            spawn_set_mute(mixer_addr, FaderTarget::Main, next_on)
+        }
         Message::MutesLoaded(result) => {
             match result {
                 Ok(mutes) => {
                     for strip in mutes {
+                        if strip.target == FaderTarget::Main {
+                            app.master_muted = Some(!strip.on);
+                            continue;
+                        }
                         if let Some(index) =
                             VISIBLE_STRIPS.iter().position(|target| *target == strip.target)
                         {
@@ -525,8 +581,11 @@ fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                         app.pans = [None; STRIP_COUNT];
                         app.faders = [None; STRIP_COUNT];
                         app.meters_db = [-90.0; STRIP_COUNT];
+                        app.master_meters_db = [-90.0, -90.0];
                         app.muted = [None; STRIP_COUNT];
                         app.soloed = [None; STRIP_COUNT];
+                        app.master_fader = None;
+                        app.master_muted = None;
                         app.status = ConnectionStatus::Disconnected;
                         app.last_error =
                             Some("no X32 mixer discovered on the local network".to_owned());
@@ -543,8 +602,11 @@ fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                     app.pans = [None; STRIP_COUNT];
                     app.faders = [None; STRIP_COUNT];
                     app.meters_db = [-90.0; STRIP_COUNT];
+                    app.master_meters_db = [-90.0, -90.0];
                     app.muted = [None; STRIP_COUNT];
                     app.soloed = [None; STRIP_COUNT];
+                    app.master_fader = None;
+                    app.master_muted = None;
                     app.status = ConnectionStatus::Disconnected;
                     app.last_error = Some(error);
                     Task::none()
@@ -582,8 +644,11 @@ fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                     app.pans = [None; STRIP_COUNT];
                     app.faders = [None; STRIP_COUNT];
                     app.meters_db = [-90.0; STRIP_COUNT];
+                    app.master_meters_db = [-90.0, -90.0];
                     app.muted = [None; STRIP_COUNT];
                     app.soloed = [None; STRIP_COUNT];
+                    app.master_fader = None;
+                    app.master_muted = None;
                     if !app.manual_target {
                         app.mixer_addr = None;
                         app.discovered_mixer = None;
@@ -599,8 +664,11 @@ fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                     app.pans = [None; STRIP_COUNT];
                     app.faders = [None; STRIP_COUNT];
                     app.meters_db = [-90.0; STRIP_COUNT];
+                    app.master_meters_db = [-90.0, -90.0];
                     app.muted = [None; STRIP_COUNT];
                     app.soloed = [None; STRIP_COUNT];
+                    app.master_fader = None;
+                    app.master_muted = None;
                     if !app.manual_target {
                         app.mixer_addr = None;
                         app.discovered_mixer = None;
@@ -621,6 +689,7 @@ fn subscription(_app: &StatusApp) -> Subscription<Message> {
             ticker,
             state_subscription(mixer_addr),
             meter_subscription(mixer_addr),
+            master_meter_subscription(mixer_addr),
         ])
     } else {
         ticker
@@ -713,7 +782,7 @@ fn spawn_load_faders(mixer_addr: SocketAddr) -> Task<Message> {
         async move {
             FaderBankProbe::new(mixer_addr)
                 .with_timeout(Duration::from_millis(250))
-                .load(&VISIBLE_STRIPS)
+                .load(&[VISIBLE_STRIPS.as_slice(), &[FaderTarget::Main]].concat())
                 .map_err(|error| error.to_string())
         },
         Message::FadersLoaded,
@@ -773,7 +842,7 @@ fn spawn_load_mutes(mixer_addr: SocketAddr) -> Task<Message> {
         async move {
             MuteBankProbe::new(mixer_addr)
                 .with_timeout(Duration::from_millis(250))
-                .load(&VISIBLE_STRIPS)
+                .load(&[VISIBLE_STRIPS.as_slice(), &[FaderTarget::Main]].concat())
                 .map_err(|error| error.to_string())
         },
         Message::MutesLoaded,
@@ -1044,9 +1113,60 @@ fn mixer_strips(app: &StatusApp) -> Element<'_, Message> {
             },
         );
 
+    let master_strip = {
+        let value = app.master_fader.unwrap_or(0.0);
+        let value_label = app
+            .master_fader
+            .map(format_fader_label)
+            .unwrap_or_else(|| "--".to_owned());
+        let is_muted = app.master_muted.unwrap_or(false);
+        let meter = container(
+            meters(2, &app.master_meters_db, STRIP_METER_HEIGHT)
+                .map(|()| unreachable!("meter widget does not emit messages")),
+        )
+        .height(Length::Fill);
+        let scale = container(
+            meter_ticks(STRIP_METER_HEIGHT)
+                .map(|()| unreachable!("tick widget does not emit messages")),
+        )
+        .height(Length::Fill)
+        .align_y(iced::alignment::Vertical::Bottom);
+
+        column![
+            Space::new().height(Length::Fixed(248.0)),
+            Space::new().height(Length::Fixed(16.0)),
+            Space::new().height(Length::Fixed(20.0)),
+            text("LR").size(14),
+            Space::new().height(Length::Fixed(30.0)),
+            text(value_label).size(14),
+            row![
+                vertical_slider(0.0..=1.0, value, Message::MasterFaderChanged)
+                    .height(Length::Fill)
+                    .width(Length::Fixed(20.0))
+                    .double_click_reset(0.75)
+                    .step(0.01),
+                scale,
+                meter,
+            ]
+            .spacing(6)
+            .height(Length::Fill)
+            .align_y(iced::Alignment::End),
+            button(text("MUTE").size(12))
+                .padding([6, 8])
+                .style(move |_theme: &Theme, _status| toggle_button_style(is_muted))
+                .on_press(Message::MasterMutePressed),
+            text("LR").size(14),
+        ]
+        .spacing(10)
+        .align_x(iced::Alignment::Center)
+    };
+
     container(
         scrollable(
-            column![strips.height(Length::Fill), Space::new().height(Length::Fixed(18.0))]
+            column![
+                row![strips.height(Length::Fill), master_strip].spacing(14),
+                Space::new().height(Length::Fixed(18.0))
+            ]
                 .height(Length::Fill),
         )
         .direction(scrollable::Direction::Horizontal(scrollable::Scrollbar::new()))
@@ -1061,6 +1181,7 @@ fn strip_label(target: FaderTarget) -> String {
     match target {
         FaderTarget::Channel(channel) => format!("CH {channel:02}"),
         FaderTarget::Aux(aux) => format!("AUX {aux:02}"),
+        FaderTarget::Main => "LR".to_owned(),
     }
 }
 
@@ -1171,6 +1292,10 @@ fn toggle_button_style(active: bool) -> button::Style {
 
 fn meter_subscription(mixer_addr: SocketAddr) -> Subscription<Message> {
     Subscription::run_with(mixer_addr, meter_worker).map(Message::MetersLoaded)
+}
+
+fn master_meter_subscription(mixer_addr: SocketAddr) -> Subscription<Message> {
+    Subscription::run_with(mixer_addr, master_meter_worker).map(Message::MasterMetersLoaded)
 }
 
 fn state_worker(mixer_addr: &SocketAddr) -> BoxStream<'static, Result<ConsoleUpdate, String>> {
@@ -1285,6 +1410,67 @@ fn meter_worker(mixer_addr: &SocketAddr) -> BoxStream<'static, Result<Vec<StripM
                 Ok(Err(error)) => {
                     let _ = output
                         .send(Err(format!("failed while receiving meter stream: {error}")))
+                        .await;
+                    return;
+                }
+                Err(_) => {}
+            }
+
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .boxed()
+}
+
+fn master_meter_worker(mixer_addr: &SocketAddr) -> BoxStream<'static, Result<[f32; 2], String>> {
+    let mixer_addr = *mixer_addr;
+    stream::channel(32, move |mut output: mpsc::Sender<Result<[f32; 2], String>>| async move {
+        let socket = match bind_meter_socket().await {
+            Ok(socket) => socket,
+            Err(error) => {
+                let _ = output.send(Err(error.to_string())).await;
+                return;
+            }
+        };
+
+        let subscribe = batchsubscribe_meter_request("meters/2", "/meters/2", 0, 0, 1);
+        if let Err(error) = socket.send_to(XREMOTE_REQUEST, mixer_addr).await {
+            let _ = output.send(Err(format!("failed to send /xremote: {error}"))).await;
+            return;
+        }
+        if let Err(error) = socket.send_to(&subscribe, mixer_addr).await {
+            let _ = output
+                .send(Err(format!("failed to send /batchsubscribe for meters/2: {error}")))
+                .await;
+            return;
+        }
+
+        let mut last_renew = Instant::now();
+        let mut buffer = [0_u8; 4096];
+
+        loop {
+            if last_renew.elapsed() >= Duration::from_secs(5) {
+                let renew = renew_request("meters/2");
+                if let Err(error) = socket.send_to(&renew, mixer_addr).await {
+                    let _ = output
+                        .send(Err(format!("failed to renew meter stream meters/2: {error}")))
+                        .await;
+                    return;
+                }
+                last_renew = Instant::now();
+            }
+
+            match tokio::time::timeout(Duration::from_millis(250), socket.recv_from(&mut buffer))
+                .await
+            {
+                Ok(Ok((received, _))) => {
+                    if let Ok(levels) = parse_main_meter_packet(&buffer[..received]) {
+                        let _ = output.send(Ok(levels)).await;
+                    }
+                }
+                Ok(Err(error)) => {
+                    let _ = output
+                        .send(Err(format!("failed while receiving main meter stream: {error}")))
                         .await;
                     return;
                 }

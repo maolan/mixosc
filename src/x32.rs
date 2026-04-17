@@ -22,6 +22,8 @@ const SOLO_RESPONSE_PREFIX: &str = "/-stat/solosw/";
 const NAME_RESPONSE_SUFFIX: &str = "/config/name";
 const INPUT_METERS_REQUEST: &str = "/meters/0";
 const INPUT_METERS_ALIAS: &str = "meters/0";
+const MAIN_METERS_REQUEST: &str = "/meters/2";
+const MAIN_METERS_ALIAS: &str = "meters/2";
 
 #[derive(Debug, Clone)]
 pub struct ConnectionProbe {
@@ -555,6 +557,7 @@ impl GainBankProbe {
 pub enum FaderTarget {
     Channel(u8),
     Aux(u8),
+    Main,
 }
 
 impl std::fmt::Display for FaderTarget {
@@ -562,6 +565,7 @@ impl std::fmt::Display for FaderTarget {
         match self {
             Self::Channel(channel) => write!(f, "channel {channel:02}"),
             Self::Aux(aux) => write!(f, "aux {aux:02}"),
+            Self::Main => write!(f, "main lr"),
         }
     }
 }
@@ -1035,6 +1039,7 @@ fn fader_path(target: FaderTarget) -> String {
     match target {
         FaderTarget::Channel(channel) => format!("/ch/{channel:02}/mix/fader"),
         FaderTarget::Aux(aux) => format!("/auxin/{aux:02}/mix/fader"),
+        FaderTarget::Main => "/main/st/mix/fader".to_owned(),
     }
 }
 
@@ -1042,6 +1047,7 @@ fn pan_path(target: FaderTarget) -> String {
     match target {
         FaderTarget::Channel(channel) => format!("/ch/{channel:02}/mix/pan"),
         FaderTarget::Aux(aux) => format!("/auxin/{aux:02}/mix/pan"),
+        FaderTarget::Main => "/main/st/mix/pan".to_owned(),
     }
 }
 
@@ -1049,6 +1055,7 @@ fn gain_path(target: FaderTarget) -> String {
     match target {
         FaderTarget::Channel(channel) => format!("/ch/{channel:02}/preamp/trim"),
         FaderTarget::Aux(aux) => format!("/auxin/{aux:02}/preamp/trim"),
+        FaderTarget::Main => "/main/st/preamp/trim".to_owned(),
     }
 }
 
@@ -1056,6 +1063,7 @@ fn headamp_index_path(target: FaderTarget) -> String {
     let index = match target {
         FaderTarget::Channel(channel) => channel - 1,
         FaderTarget::Aux(aux) => 31 + aux,
+        FaderTarget::Main => 255,
     };
     format!("/-ha/{index:02}/index")
 }
@@ -1074,6 +1082,7 @@ fn send_level_path(target: FaderTarget, bus: u8) -> String {
     match target {
         FaderTarget::Channel(channel) => format!("/ch/{channel:02}/mix/{bus:02}/level"),
         FaderTarget::Aux(aux) => format!("/auxin/{aux:02}/mix/{bus:02}/level"),
+        FaderTarget::Main => format!("/main/st/mix/{bus:02}/level"),
     }
 }
 
@@ -1081,6 +1090,7 @@ fn mute_path(target: FaderTarget) -> String {
     match target {
         FaderTarget::Channel(channel) => format!("/ch/{channel:02}/mix/on"),
         FaderTarget::Aux(aux) => format!("/auxin/{aux:02}/mix/on"),
+        FaderTarget::Main => "/main/st/mix/on".to_owned(),
     }
 }
 
@@ -1088,6 +1098,7 @@ fn solo_path(target: FaderTarget) -> String {
     let id = match target {
         FaderTarget::Channel(channel) => channel,
         FaderTarget::Aux(aux) => 32 + aux,
+        FaderTarget::Main => 0,
     };
     format!("/-stat/solosw/{id:02}")
 }
@@ -1096,6 +1107,7 @@ fn name_path(target: FaderTarget) -> String {
     match target {
         FaderTarget::Channel(channel) => format!("/ch/{channel:02}/config/name"),
         FaderTarget::Aux(aux) => format!("/auxin/{aux:02}/config/name"),
+        FaderTarget::Main => "/main/st/config/name".to_owned(),
     }
 }
 
@@ -1229,6 +1241,10 @@ fn target_from_channel_path(path: &str, suffix: &str) -> Option<FaderTarget> {
         .and_then(|rest| rest.strip_suffix(suffix))
     {
         return index.parse::<u8>().ok().map(FaderTarget::Aux);
+    }
+
+    if path == format!("/main/st{suffix}") {
+        return Some(FaderTarget::Main);
     }
 
     None
@@ -1407,9 +1423,53 @@ fn parse_string_value(packet: &[u8]) -> Option<(String, String)> {
 }
 
 pub fn parse_input_meter_packet(packet: &[u8]) -> Result<Vec<StripMeter>, ProbeError> {
+    let floats = parse_meter_blob(packet, INPUT_METERS_REQUEST, INPUT_METERS_ALIAS)?;
+
+    let mut strips = Vec::with_capacity(40);
+    for index in 0..40 {
+        let target = if index < 32 {
+            FaderTarget::Channel((index + 1) as u8)
+        } else {
+            FaderTarget::Aux((index - 31) as u8)
+        };
+        let start = index * 4;
+        let bytes: [u8; 4] = floats[start..start + 4]
+            .try_into()
+            .map_err(|_| ProbeError::Protocol("meter float slice size mismatch".to_owned()))?;
+        strips.push(StripMeter {
+            target,
+            level_linear: f32::from_le_bytes(bytes),
+        });
+    }
+    Ok(strips)
+}
+
+pub fn parse_main_meter_packet(packet: &[u8]) -> Result<[f32; 2], ProbeError> {
+    let floats = parse_meter_blob(packet, MAIN_METERS_REQUEST, MAIN_METERS_ALIAS)?;
+    if floats.len() < 24 * 4 {
+        return Err(ProbeError::Protocol(
+            "main meter blob is shorter than expected".to_owned(),
+        ));
+    }
+
+    Ok([
+        f32::from_le_bytes(floats[22 * 4..22 * 4 + 4].try_into().map_err(|_| {
+            ProbeError::Protocol("main L meter float slice size mismatch".to_owned())
+        })?),
+        f32::from_le_bytes(floats[23 * 4..23 * 4 + 4].try_into().map_err(|_| {
+            ProbeError::Protocol("main R meter float slice size mismatch".to_owned())
+        })?),
+    ])
+}
+
+fn parse_meter_blob<'a>(
+    packet: &'a [u8],
+    expected_path: &str,
+    expected_alias: &str,
+) -> Result<&'a [u8], ProbeError> {
     let path = osc_address(packet)
         .ok_or_else(|| ProbeError::Protocol("meter reply missing OSC address".to_owned()))?;
-    if path != INPUT_METERS_REQUEST && path != INPUT_METERS_ALIAS {
+    if path != expected_path && path != expected_alias {
         return Err(ProbeError::Protocol(format!(
             "unexpected meter reply path '{path}'"
         )));
@@ -1455,23 +1515,7 @@ pub fn parse_input_meter_packet(packet: &[u8]) -> Result<Vec<StripMeter>, ProbeE
         ));
     }
 
-    let mut strips = Vec::with_capacity(40);
-    for index in 0..40 {
-        let target = if index < 32 {
-            FaderTarget::Channel((index + 1) as u8)
-        } else {
-            FaderTarget::Aux((index - 31) as u8)
-        };
-        let start = index * 4;
-        let bytes: [u8; 4] = floats[start..start + 4]
-            .try_into()
-            .map_err(|_| ProbeError::Protocol("meter float slice size mismatch".to_owned()))?;
-        strips.push(StripMeter {
-            target,
-            level_linear: f32::from_le_bytes(bytes),
-        });
-    }
-    Ok(strips)
+    Ok(floats)
 }
 
 fn read_be_u32(packet: &[u8], offset: usize) -> Result<u32, ProbeError> {
