@@ -20,6 +20,7 @@ const HEADAMP_INDEX_RESPONSE_SUFFIX: &str = "/index";
 const MUTE_RESPONSE_SUFFIX: &str = "/mix/on";
 const SOLO_RESPONSE_PREFIX: &str = "/-stat/solosw/";
 const NAME_RESPONSE_SUFFIX: &str = "/config/name";
+const COLOR_RESPONSE_SUFFIX: &str = "/config/color";
 const INPUT_METERS_REQUEST: &str = "/meters/0";
 const INPUT_METERS_ALIAS: &str = "meters/0";
 const MAIN_METERS_REQUEST: &str = "/meters/2";
@@ -629,6 +630,12 @@ pub struct StripName {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StripColor {
+    pub target: FaderTarget,
+    pub value: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StripMute {
     pub target: FaderTarget,
     pub on: bool,
@@ -656,6 +663,7 @@ pub enum ConsoleUpdate {
     Mute(StripMute),
     Solo(StripSolo),
     Name(StripName),
+    Color(StripColor),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -723,6 +731,13 @@ pub struct SendBankProbe {
 
 #[derive(Debug, Clone)]
 pub struct NameBankProbe {
+    target: SocketAddr,
+    bind_addr: SocketAddr,
+    timeout: Duration,
+}
+
+#[derive(Debug, Clone)]
+pub struct ColorBankProbe {
     target: SocketAddr,
     bind_addr: SocketAddr,
     timeout: Duration,
@@ -931,6 +946,65 @@ impl NameBankProbe {
         }
 
         Ok(names)
+    }
+}
+
+impl ColorBankProbe {
+    pub fn new(target: SocketAddr) -> Self {
+        Self {
+            target,
+            bind_addr: SocketAddr::from(([0, 0, 0, 0], 0)),
+            timeout: Duration::from_millis(400),
+        }
+    }
+
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    pub fn with_bind_addr(mut self, bind_addr: SocketAddr) -> Self {
+        self.bind_addr = bind_addr;
+        self
+    }
+
+    pub fn load(&self, targets: &[FaderTarget]) -> Result<Vec<StripColor>, ProbeError> {
+        let socket = UdpSocket::bind(self.bind_addr).map_err(ProbeError::Bind)?;
+        socket
+            .set_read_timeout(Some(self.timeout))
+            .map_err(ProbeError::Configure)?;
+        socket
+            .set_write_timeout(Some(self.timeout))
+            .map_err(ProbeError::Configure)?;
+
+        let mut colors = Vec::with_capacity(targets.len());
+
+        for &target in targets {
+            let path = color_path(target);
+            let request = osc_query(&path);
+            socket
+                .send_to(&request, self.target)
+                .map_err(ProbeError::Send)?;
+
+            let mut buffer = [0_u8; 2048];
+            let (received, _) = socket.recv_from(&mut buffer).map_err(ProbeError::Receive)?;
+            let packet = &buffer[..received];
+            let Some((reply_path, value)) = parse_color_value(packet) else {
+                return Err(ProbeError::Protocol(format!(
+                    "unexpected OSC reply while reading color for {target}"
+                )));
+            };
+
+            if reply_path != path {
+                return Err(ProbeError::Protocol(format!(
+                    "received color reply for '{reply_path}' while reading {target}"
+                )));
+            }
+
+            colors.push(StripColor { target, value });
+        }
+
+        Ok(colors)
     }
 }
 
@@ -1158,6 +1232,18 @@ fn name_path(target: FaderTarget) -> String {
     }
 }
 
+fn color_path(target: FaderTarget) -> String {
+    match target {
+        FaderTarget::Channel(channel) => format!("/ch/{channel:02}/config/color"),
+        FaderTarget::Aux(aux) => format!("/auxin/{aux:02}/config/color"),
+        FaderTarget::Bus(bus) => format!("/bus/{bus:02}/config/color"),
+        FaderTarget::FxRtn(fx) => format!("/fxrtn/{fx:02}/config/color"),
+        FaderTarget::Mtx(mtx) => format!("/mtx/{mtx:02}/config/color"),
+        FaderTarget::Dca(dca) => format!("/dca/{dca}/config/color"),
+        FaderTarget::Main => "/main/st/config/color".to_owned(),
+    }
+}
+
 fn osc_address(packet: &[u8]) -> Option<&str> {
     let end = packet.iter().position(|byte| *byte == 0)?;
     std::str::from_utf8(&packet[..end]).ok()
@@ -1243,6 +1329,12 @@ pub fn parse_console_update(packet: &[u8]) -> Option<ConsoleUpdate> {
         && let Some(target) = target_from_channel_path(&path, NAME_RESPONSE_SUFFIX)
     {
         return Some(ConsoleUpdate::Name(StripName { target, value }));
+    }
+
+    if let Some((path, value)) = parse_color_value(packet)
+        && let Some(target) = target_from_channel_path(&path, COLOR_RESPONSE_SUFFIX)
+    {
+        return Some(ConsoleUpdate::Color(StripColor { target, value }));
     }
 
     None
@@ -1538,6 +1630,27 @@ fn parse_string_value(packet: &[u8]) -> Option<(String, String)> {
     let value_end = value_bytes.iter().position(|byte| *byte == 0)?;
     let value = std::str::from_utf8(&value_bytes[..value_end]).ok()?;
     Some((path.to_owned(), value.to_owned()))
+}
+
+fn parse_color_value(packet: &[u8]) -> Option<(String, u8)> {
+    let path = osc_address(packet)?;
+    if !path.ends_with(COLOR_RESPONSE_SUFFIX) {
+        return None;
+    }
+
+    let mut offset = osc_padded_len(packet)?;
+    let type_tag_end = packet.get(offset..)?.iter().position(|byte| *byte == 0)?;
+    let type_tag = std::str::from_utf8(packet.get(offset..offset + type_tag_end)?).ok()?;
+    let type_tag_len = osc_padded_len(packet.get(offset..)?)?;
+    offset += type_tag_len;
+
+    if type_tag != ",i" {
+        return None;
+    }
+
+    let value_bytes: [u8; 4] = packet.get(offset..offset + 4)?.try_into().ok()?;
+    let value = i32::from_be_bytes(value_bytes).clamp(0, 15) as u8;
+    Some((path.to_owned(), value))
 }
 
 pub fn parse_input_meter_packet(packet: &[u8]) -> Result<Vec<StripMeter>, ProbeError> {

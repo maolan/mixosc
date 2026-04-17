@@ -8,10 +8,10 @@ use maolan_widgets::meters::meters;
 use maolan_widgets::slider::slider as vertical_slider;
 use maolan_widgets::ticks::meter_ticks;
 use mixosc::{
-    ConnectionProbe, ConsoleUpdate, DiscoveredMixer, DiscoveryProbe, FaderBankProbe, FaderTarget,
-    GainBankProbe, GainSource, MainMeterLevels, MuteBankProbe, NameBankProbe, PanBankProbe,
-    ProbeOutcome, ProbeResponse, SendBankProbe, SoloBankProbe, StripFader, StripGain, StripMeter,
-    StripMute, StripName, StripPan, StripSend, StripSolo, XREMOTE_REQUEST,
+    ColorBankProbe, ConnectionProbe, ConsoleUpdate, DiscoveredMixer, DiscoveryProbe, FaderBankProbe,
+    FaderTarget, GainBankProbe, GainSource, MainMeterLevels, MuteBankProbe, NameBankProbe,
+    PanBankProbe, ProbeOutcome, ProbeResponse, SendBankProbe, SoloBankProbe, StripColor, StripFader,
+    StripGain, StripMeter, StripMute, StripName, StripPan, StripSend, StripSolo, XREMOTE_REQUEST,
     batchsubscribe_meter_request, parse_console_update, parse_input_meter_packet,
     parse_main_meter_packet, parse_target, renew_request,
 };
@@ -118,6 +118,7 @@ struct StatusApp {
     manual_target: bool,
     probe_in_flight: bool,
     names: [Option<String>; STRIP_COUNT],
+    colors: [Option<u8>; STRIP_COUNT],
     gains: [Option<f32>; STRIP_COUNT],
     gain_sources: [GainSource; STRIP_COUNT],
     sends: [[Option<f32>; SEND_BUS_COUNT]; STRIP_COUNT],
@@ -130,6 +131,7 @@ struct StatusApp {
     master_fader: Option<f32>,
     master_muted: Option<bool>,
     master_soloed: Option<bool>,
+    master_color: Option<u8>,
     status: ConnectionStatus,
     last_error: Option<String>,
 }
@@ -151,6 +153,7 @@ enum Message {
     FaderChanged(usize, f32),
     MasterFaderChanged(f32),
     NamesLoaded(Result<Vec<StripName>, String>),
+    ColorsLoaded(Result<Vec<StripColor>, String>),
     GainsLoaded(Result<Vec<StripGain>, String>),
     SendsLoaded(Result<Vec<StripSend>, String>),
     PansLoaded(Result<Vec<StripPan>, String>),
@@ -181,6 +184,7 @@ fn new() -> (StatusApp, Task<Message>) {
         manual_target: maybe_target.is_some(),
         probe_in_flight: true,
         names: std::array::from_fn(|_| None),
+        colors: [None; STRIP_COUNT],
         gains: [None; STRIP_COUNT],
         gain_sources: [GainSource::Trim; STRIP_COUNT],
         sends: [[None; SEND_BUS_COUNT]; STRIP_COUNT],
@@ -193,6 +197,7 @@ fn new() -> (StatusApp, Task<Message>) {
         master_fader: None,
         master_muted: None,
         master_soloed: None,
+        master_color: None,
         status: ConnectionStatus::Checking,
         last_error: None,
     };
@@ -301,6 +306,18 @@ fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                         };
                     }
                 }
+                Ok(ConsoleUpdate::Color(strip)) => {
+                    if strip.target == FaderTarget::Main {
+                        app.master_color = Some(strip.value);
+                        return Task::none();
+                    }
+                    if let Some(index) = VISIBLE_STRIPS
+                        .iter()
+                        .position(|target| *target == strip.target)
+                    {
+                        app.colors[index] = Some(strip.value);
+                    }
+                }
                 Err(error) => app.last_error = Some(error),
             }
 
@@ -374,6 +391,27 @@ fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                             } else {
                                 Some(strip.value)
                             };
+                        }
+                    }
+                }
+                Err(error) => app.last_error = Some(error),
+            }
+
+            Task::none()
+        }
+        Message::ColorsLoaded(result) => {
+            match result {
+                Ok(colors) => {
+                    for strip in colors {
+                        if strip.target == FaderTarget::Main {
+                            app.master_color = Some(strip.value);
+                            continue;
+                        }
+                        if let Some(index) = VISIBLE_STRIPS
+                            .iter()
+                            .position(|target| *target == strip.target)
+                        {
+                            app.colors[index] = Some(strip.value);
                         }
                     }
                 }
@@ -628,6 +666,7 @@ fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                         app.mixer_addr = None;
                         app.discovered_mixer = None;
                         app.names = std::array::from_fn(|_| None);
+                        app.colors = [None; STRIP_COUNT];
                         app.gains = [None; STRIP_COUNT];
                         app.gain_sources = [GainSource::Trim; STRIP_COUNT];
                         app.sends = [[None; SEND_BUS_COUNT]; STRIP_COUNT];
@@ -640,6 +679,7 @@ fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                         app.master_fader = None;
                         app.master_muted = None;
                         app.master_soloed = None;
+                        app.master_color = None;
                         app.status = ConnectionStatus::Disconnected;
                         app.last_error =
                             Some("no X32 mixer discovered on the local network".to_owned());
@@ -679,6 +719,7 @@ fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                         if let Some(mixer_addr) = app.mixer_addr {
                             return Task::batch([
                                 spawn_load_names(mixer_addr),
+                                spawn_load_colors(mixer_addr),
                                 spawn_load_gains(mixer_addr),
                                 spawn_load_sends(mixer_addr),
                                 spawn_load_pans(mixer_addr),
@@ -705,6 +746,7 @@ fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                     app.master_fader = None;
                     app.master_muted = None;
                     app.master_soloed = None;
+                    app.master_color = None;
                     if !app.manual_target {
                         app.mixer_addr = None;
                         app.discovered_mixer = None;
@@ -726,6 +768,7 @@ fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                     app.master_fader = None;
                     app.master_muted = None;
                     app.master_soloed = None;
+                    app.master_color = None;
                     if !app.manual_target {
                         app.mixer_addr = None;
                         app.discovered_mixer = None;
@@ -855,6 +898,18 @@ fn spawn_load_names(mixer_addr: SocketAddr) -> Task<Message> {
                 .map_err(|error| error.to_string())
         },
         Message::NamesLoaded,
+    )
+}
+
+fn spawn_load_colors(mixer_addr: SocketAddr) -> Task<Message> {
+    Task::perform(
+        async move {
+            ColorBankProbe::new(mixer_addr)
+                .with_timeout(Duration::from_millis(250))
+                .load(&[VISIBLE_STRIPS.as_slice(), &[FaderTarget::Main]].concat())
+                .map_err(|error| error.to_string())
+        },
+        Message::ColorsLoaded,
     )
 }
 
@@ -1052,6 +1107,7 @@ fn refresh_mixer(mixer_addr: SocketAddr) -> Task<Message> {
     Task::batch([
         spawn_probe(mixer_addr),
         spawn_load_names(mixer_addr),
+        spawn_load_colors(mixer_addr),
         spawn_load_gains(mixer_addr),
         spawn_load_sends(mixer_addr),
         spawn_load_pans(mixer_addr),
@@ -1094,7 +1150,7 @@ fn mixer_strips(app: &StatusApp) -> Element<'_, Message> {
         .iter()
         .enumerate()
         .fold(
-            row!().spacing(14).align_y(iced::Alignment::End),
+            row!().spacing(0).align_y(iced::Alignment::End),
             |strips, (index, value)| {
                 let gain_value = app.gains[index].unwrap_or(0.0);
                 let gain_source = app.gain_sources[index];
@@ -1222,7 +1278,24 @@ fn mixer_strips(app: &StatusApp) -> Element<'_, Message> {
                     strip = strip.push(sends);
                 }
                 strip = strip.push(pan_block);
-                strip = strip.push(text(strip_name(app, index, target)).size(14));
+                let strip_color = app.colors[index].unwrap_or(0);
+                let color_rgb = x32_color_to_rgb(strip_color);
+                let is_inverted = (9..=15).contains(&strip_color);
+                let text_color = if is_inverted { Color::BLACK } else { color_rgb };
+                let bg = if is_inverted { Some(Background::Color(color_rgb)) } else { None };
+                strip = strip.push(
+                    container(text(strip_name(app, index, target)).size(14).color(text_color))
+                        .style(move |_theme: &Theme| container::Style {
+                            border: Border {
+                                color: color_rgb,
+                                width: 1.0,
+                                radius: 4.0.into(),
+                            },
+                            background: bg,
+                            ..Default::default()
+                        })
+                        .padding([2, 6]),
+                );
                 if !matches!(target, FaderTarget::Mtx(_)) {
                     strip = strip.push(solo_button);
                 }
@@ -1252,7 +1325,18 @@ fn mixer_strips(app: &StatusApp) -> Element<'_, Message> {
                         .on_press(Message::MutePressed(index)),
                 );
                 strip = strip.push(text(strip_label(target)).size(14));
-                strips.push(strip)
+                strips.push(
+                    container(strip)
+                        .style(move |_theme: &Theme| container::Style {
+                            border: Border {
+                                color: Color::from_rgb8(0x3B, 0x42, 0x52),
+                                width: 1.0,
+                                radius: 4.0.into(),
+                            },
+                            ..Default::default()
+                        })
+                        .padding([0, 7]),
+                )
             },
         );
 
@@ -1279,7 +1363,24 @@ fn mixer_strips(app: &StatusApp) -> Element<'_, Message> {
         column![
             Space::new().height(Length::Fixed(26.0)),
             Space::new().height(Length::Fixed(0.0)),
-            text("LR").size(14),
+            {
+                let master_color_val = app.master_color.unwrap_or(0);
+                let color_rgb = x32_color_to_rgb(master_color_val);
+                let is_inverted = (9..=15).contains(&master_color_val);
+                let text_color = if is_inverted { Color::BLACK } else { color_rgb };
+                let bg = if is_inverted { Some(Background::Color(color_rgb)) } else { None };
+                container(text("LR").size(14).color(text_color))
+                    .style(move |_theme: &Theme| container::Style {
+                        border: Border {
+                            color: color_rgb,
+                            width: 1.0,
+                            radius: 4.0.into(),
+                        },
+                        background: bg,
+                        ..Default::default()
+                    })
+                    .padding([2, 6])
+            },
             button(text("SOLO").size(12))
                 .padding([6, 8])
                 .style(move |_theme: &Theme, _status| toggle_button_style(is_soloed, Color::from_rgb8(0xF0, 0xC0, 0x30)))
@@ -1307,6 +1408,17 @@ fn mixer_strips(app: &StatusApp) -> Element<'_, Message> {
         .align_x(iced::Alignment::Center)
     };
 
+    let master_strip = container(master_strip)
+        .style(move |_theme: &Theme| container::Style {
+            border: Border {
+                color: Color::from_rgb8(0x3B, 0x42, 0x52),
+                width: 1.0,
+                radius: 0.0.into(),
+            },
+            ..Default::default()
+        })
+        .padding([0, 7]);
+
     container(
         row![
             scrollable(
@@ -1321,7 +1433,7 @@ fn mixer_strips(app: &StatusApp) -> Element<'_, Message> {
             .height(Length::Fill),
             master_strip,
         ]
-        .spacing(14)
+        .spacing(0)
         .width(Length::Fill)
         .height(Length::Fill)
         .align_y(iced::Alignment::End),
@@ -1329,6 +1441,26 @@ fn mixer_strips(app: &StatusApp) -> Element<'_, Message> {
     .width(Length::Fill)
     .height(Length::Fill)
     .into()
+}
+
+fn x32_color_to_rgb(value: u8) -> Color {
+    match value {
+        1 => Color::from_rgb8(0xFF, 0x45, 0x45),   // RD
+        2 => Color::from_rgb8(0x32, 0xCD, 0x32),   // GN
+        3 => Color::from_rgb8(0xFF, 0xD7, 0x00),   // YE
+        4 => Color::from_rgb8(0x41, 0x69, 0xE1),   // BL
+        5 => Color::from_rgb8(0xFF, 0x00, 0xFF),   // MG
+        6 => Color::from_rgb8(0x00, 0xFF, 0xFF),   // CY
+        7 => Color::from_rgb8(0xFF, 0xFF, 0xFF),   // WH
+        9 => Color::from_rgb8(0xCC, 0x33, 0x33),   // RDi
+        10 => Color::from_rgb8(0x28, 0xA4, 0x28),  // GNi
+        11 => Color::from_rgb8(0xCC, 0xAC, 0x00),  // YEi
+        12 => Color::from_rgb8(0x33, 0x55, 0xB4),  // BLi
+        13 => Color::from_rgb8(0xCC, 0x00, 0xCC),  // MGi
+        14 => Color::from_rgb8(0x00, 0xCC, 0xCC),  // CYi
+        15 => Color::from_rgb8(0xDD, 0xDD, 0xDD),  // WHi
+        _ => Color::from_rgb8(0x3B, 0x42, 0x52),   // OFF / default
+    }
 }
 
 fn strip_label(target: FaderTarget) -> String {
