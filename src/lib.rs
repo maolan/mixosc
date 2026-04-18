@@ -1,9 +1,5 @@
-mod reference;
 mod x32;
 
-pub use reference::{
-    Endpoint, FullExtract, FullExtractCounts, FullExtractPattern, ReferenceError, ReferenceFiles,
-};
 pub use x32::{
     ColorBankProbe, ConnectionProbe, ConsoleUpdate, DiscoveredMixer, DiscoveryProbe, FaderBankProbe,
     FaderTarget, GainBankProbe, GainSource, MainMeterLevels, MeterBankProbe, MuteBankProbe,

@@ -2087,8 +2087,6 @@ dependencies = [
  "iced",
  "iced_fonts",
  "maolan-widgets",
- "serde",
- "serde_json",
  "tokio",
 ]
 

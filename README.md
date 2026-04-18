@@ -7,7 +7,7 @@ Rust OSC client for Behringer X32-family mixers.
 `mixosc` currently contains two pieces:
 
 - A desktop GUI built with `iced` that discovers an X32 on the local network and exposes a mixer-style control surface.
-- A Rust library for X32 UDP/OSC discovery, connection probing, state loading, state updates, meter parsing, and reference-file loading.
+- A Rust library for X32 UDP/OSC discovery, connection probing, state loading, state updates, and meter parsing.
 
 ## Current GUI behavior
 
@@ -90,13 +90,6 @@ The crate exports OSC/X32 helpers from `src/x32.rs`, including:
 - Meter handling: `batchsubscribe_meter_request`, `renew_request`, `parse_input_meter_packet`, `parse_main_meter_packet`
 - Console update parsing: `parse_console_update`, `ConsoleUpdate`
 - Address parsing and constants: `parse_target`, `X32_DEFAULT_PORT`, `X32_BROADCAST_ADDR`, `XREMOTE_REQUEST`
-
-It also exports `ReferenceFiles` and related types from `src/reference.rs` for loading JSON reference data:
-
-- `x32_osc_endpoints.json`
-- `x32_osc_full_extract.json`
-
-Those reference loaders are part of the library API, but the current GUI does not use them directly.
 
 ## Development
 
