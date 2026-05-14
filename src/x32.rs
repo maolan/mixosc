@@ -1435,7 +1435,6 @@ fn target_from_channel_path(path: &str, suffix: &str) -> Option<FaderTarget> {
         return index.parse::<u8>().ok().map(FaderTarget::Mtx);
     }
 
-    // DCA paths have a different structure without /mix/ prefix
     if suffix == FADER_RESPONSE_SUFFIX
         && let Some(index) = path
             .strip_prefix("/dca/")
