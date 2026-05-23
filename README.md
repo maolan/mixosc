@@ -30,7 +30,7 @@ For the strips that support them, the UI shows and updates in real time:
 - Sends
 - Pan
 - Fader level
-- Input and main/matrix meters
+- Input, bus, main/matrix meters, and RTA (Real-Time Analyzer)
 - Mute
 - Solo
 
@@ -40,10 +40,10 @@ The app subscribes to live OSC updates with `/xremote` and meter subscriptions, 
 
 - Channels and aux inputs: gain/trim, sends to buses 1-16, pan, fader, mute, solo, color, name, meters
 - FX returns: sends to buses 1-16, pan, fader, mute, solo, color, name
-- Buses: sends to matrices 1-6, pan, fader, mute, solo, color, name
+- Buses: sends to matrices 1-6, pan, fader, mute, solo, color, name, bus meters
 - Matrices: fader, mute, color, name, matrix meter
 - DCAs: fader, mute, color, name
-- Main LR: fader, mute, color, stereo meter
+- Main LR: fader, mute, color, stereo meter, RTA
 
 Implementation details from the current code:
 
@@ -53,7 +53,6 @@ Implementation details from the current code:
 - Pan is not exposed for matrices or DCAs.
 - DCA and matrix solo are not sent to the mixer.
 - Master solo is only a local UI toggle right now; it is not sent to the mixer.
-- Passing an invalid CLI argument causes a panic because the first positional argument is always parsed as `host[:port]`.
 
 ## Running
 
@@ -89,7 +88,7 @@ The crate exports OSC/X32 helpers from `src/x32.rs`, including:
 
 - Discovery and connectivity: `DiscoveryProbe`, `ConnectionProbe`, `DiscoveredMixer`, `ProbeOutcome`
 - Strip state loading and control: `FaderBankProbe`, `PanBankProbe`, `GainBankProbe`, `SendBankProbe`, `MuteBankProbe`, `SoloBankProbe`, `NameBankProbe`, `ColorBankProbe`
-- Meter handling: `batchsubscribe_meter_request`, `renew_request`, `parse_input_meter_packet`, `parse_main_meter_packet`
+- Meter handling: `batchsubscribe_meter_request`, `renew_request`, `parse_input_meter_packet`, `parse_main_meter_packet`, `parse_rta_meter_packet`
 - Console update parsing: `parse_console_update`, `ConsoleUpdate`
 - Address parsing and constants: `parse_target`, `X32_DEFAULT_PORT`, `X32_BROADCAST_ADDR`, `XREMOTE_REQUEST`
 

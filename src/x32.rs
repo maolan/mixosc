@@ -684,7 +684,10 @@ pub struct StripMeter {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConsoleUpdate {
     Gain(StripGain),
-    HeadampGain { index: u8, value: f32 },
+    HeadampGain {
+        index: u8,
+        value: f32,
+    },
     Fader(StripFader),
     Pan(StripPan),
     Send(StripSend),
@@ -692,6 +695,10 @@ pub enum ConsoleUpdate {
     Solo(StripSolo),
     Name(StripName),
     Color(StripColor),
+    Parameter {
+        path: String,
+        value: crate::parameters::OscValue,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -776,6 +783,128 @@ pub struct SoloBankProbe {
     target: SocketAddr,
     bind_addr: SocketAddr,
     timeout: Duration,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParameterProbe {
+    target: SocketAddr,
+    bind_addr: SocketAddr,
+    timeout: Duration,
+}
+
+impl ParameterProbe {
+    pub fn new(target: SocketAddr) -> Self {
+        Self {
+            target,
+            bind_addr: SocketAddr::from(([0, 0, 0, 0], 0)),
+            timeout: Duration::from_millis(400),
+        }
+    }
+
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    pub fn with_bind_addr(mut self, bind_addr: SocketAddr) -> Self {
+        self.bind_addr = bind_addr;
+        self
+    }
+
+    pub fn get(&self, path: &str) -> Result<crate::parameters::OscValue, ProbeError> {
+        let socket = UdpSocket::bind(self.bind_addr).map_err(ProbeError::Bind)?;
+        socket
+            .set_read_timeout(Some(self.timeout))
+            .map_err(ProbeError::Configure)?;
+        socket
+            .set_write_timeout(Some(self.timeout))
+            .map_err(ProbeError::Configure)?;
+
+        let request = crate::parameters::build_get(path);
+        socket
+            .send_to(&request, self.target)
+            .map_err(ProbeError::Send)?;
+
+        let mut buffer = [0_u8; 2048];
+        let (received, _) = socket.recv_from(&mut buffer).map_err(ProbeError::Receive)?;
+        let packet = &buffer[..received];
+        let Some((reply_path, value)) = crate::parameters::parse_osc_value(packet) else {
+            return Err(ProbeError::Protocol(format!(
+                "unexpected OSC reply while reading {path}"
+            )));
+        };
+
+        if reply_path != path {
+            return Err(ProbeError::Protocol(format!(
+                "received reply for '{reply_path}' while reading {path}"
+            )));
+        }
+
+        Ok(value)
+    }
+
+    pub fn set(&self, path: &str, value: crate::parameters::OscValue) -> Result<(), ProbeError> {
+        let socket = UdpSocket::bind(self.bind_addr).map_err(ProbeError::Bind)?;
+        socket
+            .set_write_timeout(Some(self.timeout))
+            .map_err(ProbeError::Configure)?;
+
+        let packet = crate::parameters::build_set(path, value);
+        socket
+            .send_to(&packet, self.target)
+            .map_err(ProbeError::Send)?;
+        Ok(())
+    }
+
+    pub fn set_multi(
+        &self,
+        path: &str,
+        values: &[crate::parameters::OscValue],
+    ) -> Result<(), ProbeError> {
+        let socket = UdpSocket::bind(self.bind_addr).map_err(ProbeError::Bind)?;
+        socket
+            .set_write_timeout(Some(self.timeout))
+            .map_err(ProbeError::Configure)?;
+
+        let packet = crate::parameters::build_set_multi(path, values);
+        socket
+            .send_to(&packet, self.target)
+            .map_err(ProbeError::Send)?;
+        Ok(())
+    }
+
+    pub fn load_batch(
+        &self,
+        paths: &[String],
+    ) -> Result<Vec<(String, crate::parameters::OscValue)>, ProbeError> {
+        let socket = UdpSocket::bind(self.bind_addr).map_err(ProbeError::Bind)?;
+        socket
+            .set_read_timeout(Some(self.timeout))
+            .map_err(ProbeError::Configure)?;
+        socket
+            .set_write_timeout(Some(self.timeout))
+            .map_err(ProbeError::Configure)?;
+
+        let mut results = Vec::with_capacity(paths.len());
+        for path in paths {
+            let request = crate::parameters::build_get(path);
+            socket
+                .send_to(&request, self.target)
+                .map_err(ProbeError::Send)?;
+
+            let mut buffer = [0_u8; 2048];
+            let (received, _) = socket.recv_from(&mut buffer).map_err(ProbeError::Receive)?;
+            let packet = &buffer[..received];
+            let Some((reply_path, value)) = crate::parameters::parse_osc_value(packet) else {
+                continue;
+            };
+
+            if reply_path == *path {
+                results.push((reply_path, value));
+            }
+        }
+        Ok(results)
+    }
 }
 
 impl SoloBankProbe {
@@ -1276,7 +1405,7 @@ fn color_path(target: FaderTarget) -> String {
     }
 }
 
-fn osc_address(packet: &[u8]) -> Option<&str> {
+pub fn osc_address(packet: &[u8]) -> Option<&str> {
     let end = packet.iter().position(|byte| *byte == 0)?;
     std::str::from_utf8(&packet[..end]).ok()
 }
@@ -1369,6 +1498,10 @@ pub fn parse_console_update(packet: &[u8]) -> Option<ConsoleUpdate> {
         return Some(ConsoleUpdate::Color(StripColor { target, value }));
     }
 
+    if let Some((path, value)) = crate::parameters::parse_osc_value(packet) {
+        return Some(ConsoleUpdate::Parameter { path, value });
+    }
+
     None
 }
 
@@ -1376,21 +1509,28 @@ fn osc_query(address: &str) -> Vec<u8> {
     osc_string(address)
 }
 
-fn osc_float_message(address: &str, value: f32) -> Vec<u8> {
+pub fn osc_float_message(address: &str, value: f32) -> Vec<u8> {
     let mut packet = osc_string(address);
     packet.extend_from_slice(b",f\0\0");
     packet.extend_from_slice(&value.to_bits().to_be_bytes());
     packet
 }
 
-fn osc_int_message(address: &str, value: i32) -> Vec<u8> {
+pub fn osc_int_message(address: &str, value: i32) -> Vec<u8> {
     let mut packet = osc_string(address);
     packet.extend_from_slice(b",i\0\0");
     packet.extend_from_slice(&value.to_be_bytes());
     packet
 }
 
-fn osc_string(value: &str) -> Vec<u8> {
+pub fn osc_string_message(address: &str, value: &str) -> Vec<u8> {
+    let mut packet = osc_string(address);
+    packet.extend_from_slice(b",s\0\0");
+    packet.extend_from_slice(&osc_string(value));
+    packet
+}
+
+pub fn osc_string(value: &str) -> Vec<u8> {
     let mut bytes = value.as_bytes().to_vec();
     bytes.push(0);
     while !bytes.len().is_multiple_of(4) {
@@ -1498,6 +1638,8 @@ fn target_and_bus_from_send_path(path: &str) -> Option<(FaderTarget, u8)> {
     } else if let Some(rest) = path.strip_prefix("/fxrtn/") {
         let (fx, rest) = rest.split_once('/')?;
         (FaderTarget::FxRtn(fx.parse::<u8>().ok()?), rest)
+    } else if let Some(rest) = path.strip_prefix("/main/st/") {
+        (FaderTarget::Main, rest)
     } else {
         return None;
     };
@@ -1729,6 +1871,7 @@ pub fn parse_input_meter_packet(packet: &[u8]) -> Result<Vec<StripMeter>, ProbeE
 
 #[derive(Debug, Clone, Copy)]
 pub struct MainMeterLevels {
+    pub mains: [f32; 16],
     pub main_lr: [f32; 2],
     pub matrices: [f32; 6],
 }
@@ -1741,6 +1884,13 @@ pub fn parse_main_meter_packet(packet: &[u8]) -> Result<MainMeterLevels, ProbeEr
         ));
     }
 
+    let mut mains = [0.0f32; 16];
+    for i in 0..16 {
+        mains[i] = f32::from_le_bytes(floats[i * 4..i * 4 + 4].try_into().map_err(|_| {
+            ProbeError::Protocol(format!("main meter {i} float slice size mismatch"))
+        })?);
+    }
+
     let mut matrices = [0.0f32; 6];
     for i in 0..6 {
         matrices[i] =
@@ -1750,6 +1900,7 @@ pub fn parse_main_meter_packet(packet: &[u8]) -> Result<MainMeterLevels, ProbeEr
     }
 
     Ok(MainMeterLevels {
+        mains,
         main_lr: [
             f32::from_le_bytes(floats[22 * 4..22 * 4 + 4].try_into().map_err(|_| {
                 ProbeError::Protocol("main L meter float slice size mismatch".to_owned())
@@ -1760,6 +1911,64 @@ pub fn parse_main_meter_packet(packet: &[u8]) -> Result<MainMeterLevels, ProbeEr
         ],
         matrices,
     })
+}
+
+pub fn parse_rta_meter_packet(packet: &[u8]) -> Result<[f32; 100], ProbeError> {
+    let path = osc_address(packet)
+        .ok_or_else(|| ProbeError::Protocol("rta meter reply missing OSC address".to_owned()))?;
+    if path != "/meters/15" {
+        return Err(ProbeError::Protocol(format!(
+            "unexpected rta meter reply path '{path}'"
+        )));
+    }
+
+    let mut offset = osc_padded_len(packet).ok_or_else(|| {
+        ProbeError::Protocol("rta meter reply has invalid OSC address".to_owned())
+    })?;
+    let type_tag_end = packet[offset..]
+        .iter()
+        .position(|byte| *byte == 0)
+        .ok_or_else(|| ProbeError::Protocol("rta meter reply missing OSC type tag".to_owned()))?;
+    let type_tag = std::str::from_utf8(&packet[offset..offset + type_tag_end])
+        .map_err(|_| ProbeError::Protocol("rta meter reply type tag is not UTF-8".to_owned()))?;
+    if type_tag != ",b" {
+        return Err(ProbeError::Protocol(format!(
+            "unexpected rta meter reply type tag '{type_tag}'"
+        )));
+    }
+    offset += osc_padded_len(&packet[offset..])
+        .ok_or_else(|| ProbeError::Protocol("rta meter reply has invalid type tag".to_owned()))?;
+
+    let blob_len = read_be_u32(packet, offset)? as usize;
+    offset += 4;
+    let blob = packet.get(offset..offset + blob_len).ok_or_else(|| {
+        ProbeError::Protocol("rta meter blob length exceeds packet size".to_owned())
+    })?;
+
+    // RTA blob: 50 × u32 values, each u32 = 2 little-endian i16 samples
+    // Total: 100 i16 values → 100 f32 dB values (divide by 256.0)
+    let mut values = [-128.0f32; 100];
+    let mut idx = 0;
+    for chunk in blob.chunks_exact(4) {
+        if idx >= 100 {
+            break;
+        }
+        let u = u32::from_le_bytes(
+            chunk
+                .try_into()
+                .map_err(|_| ProbeError::Protocol("rta meter chunk size mismatch".to_owned()))?,
+        );
+        let low = (u & 0xFFFF) as i16;
+        let high = ((u >> 16) & 0xFFFF) as i16;
+        values[idx] = low as f32 / 256.0;
+        idx += 1;
+        if idx < 100 {
+            values[idx] = high as f32 / 256.0;
+            idx += 1;
+        }
+    }
+
+    Ok(values)
 }
 
 fn parse_meter_blob<'a>(
@@ -1859,7 +2068,7 @@ fn osc_strings(packet: &[u8]) -> Vec<String> {
     values
 }
 
-fn osc_padded_len(bytes: &[u8]) -> Option<usize> {
+pub fn osc_padded_len(bytes: &[u8]) -> Option<usize> {
     let end = bytes.iter().position(|byte| *byte == 0)?;
     let raw = end + 1;
     Some((raw + 3) & !3)
