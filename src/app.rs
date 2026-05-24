@@ -1,10 +1,10 @@
 use crate::parameters::OscValue;
 use crate::{
     ColorBankProbe, ConnectionProbe, ConsoleUpdate, DiscoveredMixer, DiscoveryProbe,
-    FaderBankProbe, FaderTarget, GainBankProbe, GainSource, MainMeterLevels, MuteBankProbe,
-    NameBankProbe, PanBankProbe, ProbeOutcome, ProbeResponse, SendBankProbe, SoloBankProbe,
-    StripColor, StripFader, StripGain, StripMeter, StripMute, StripName, StripPan, StripSend,
-    StripSolo, XREMOTE_REQUEST, batchsubscribe_meter_request, parse_console_update,
+    FaderBankProbe, FaderTarget, GainBankProbe, GainSource, MainMeterLevels, MixerModel,
+    MuteBankProbe, NameBankProbe, PanBankProbe, ProbeOutcome, ProbeResponse, SendBankProbe,
+    SoloBankProbe, StripColor, StripFader, StripGain, StripMeter, StripMute, StripName, StripPan,
+    StripSend, StripSolo, XREMOTE_REQUEST, batchsubscribe_meter_request, parse_console_update,
     parse_input_meter_packet, parse_main_meter_packet, parse_rta_meter_packet, parse_target,
     renew_request,
 };
@@ -27,12 +27,22 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::time::{Instant, sleep};
 
-const STRIP_COUNT: usize = 74;
-const SEND_BUS_COUNT: usize = 16;
+const MAX_STRIP_COUNT: usize = 74;
+const MAX_SEND_BUS_COUNT: usize = 16;
 const STRIP_METER_HEIGHT: f32 = 260.0;
-const SEND_BUSES: [u8; SEND_BUS_COUNT] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
-const MATRIX_SENDS: [u8; 6] = [1, 2, 3, 4, 5, 6];
-const VISIBLE_STRIPS: [FaderTarget; STRIP_COUNT] = [
+
+#[derive(Debug, Clone, Copy)]
+pub struct MixerConfig {
+    pub strip_count: usize,
+    pub send_bus_count: usize,
+    pub visible_strips: &'static [FaderTarget],
+    pub send_buses: &'static [u8],
+    pub matrix_sends: &'static [u8],
+    pub dca_count: usize,
+    pub mute_group_count: usize,
+}
+
+const X32_VISIBLE_STRIPS: &[FaderTarget] = &[
     FaderTarget::Channel(1),
     FaderTarget::Channel(2),
     FaderTarget::Channel(3),
@@ -109,6 +119,69 @@ const VISIBLE_STRIPS: [FaderTarget; STRIP_COUNT] = [
     FaderTarget::Dca(8),
 ];
 
+const X32_SEND_BUSES: &[u8] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+const X32_MATRIX_SENDS: &[u8] = &[1, 2, 3, 4, 5, 6];
+
+const XR18_VISIBLE_STRIPS: &[FaderTarget] = &[
+    FaderTarget::Channel(1),
+    FaderTarget::Channel(2),
+    FaderTarget::Channel(3),
+    FaderTarget::Channel(4),
+    FaderTarget::Channel(5),
+    FaderTarget::Channel(6),
+    FaderTarget::Channel(7),
+    FaderTarget::Channel(8),
+    FaderTarget::Channel(9),
+    FaderTarget::Channel(10),
+    FaderTarget::Channel(11),
+    FaderTarget::Channel(12),
+    FaderTarget::Channel(13),
+    FaderTarget::Channel(14),
+    FaderTarget::Channel(15),
+    FaderTarget::Channel(16),
+    FaderTarget::Bus(1),
+    FaderTarget::Bus(2),
+    FaderTarget::Bus(3),
+    FaderTarget::Bus(4),
+    FaderTarget::Bus(5),
+    FaderTarget::Bus(6),
+    FaderTarget::FxRtn(1),
+    FaderTarget::FxRtn(2),
+    FaderTarget::FxRtn(3),
+    FaderTarget::FxRtn(4),
+    FaderTarget::FxRtn(5),
+    FaderTarget::Dca(1),
+    FaderTarget::Dca(2),
+    FaderTarget::Dca(3),
+    FaderTarget::Dca(4),
+];
+
+const XR18_SEND_BUSES: &[u8] = &[1, 2, 3, 4, 5, 6];
+const XR18_MATRIX_SENDS: &[u8] = &[];
+
+fn config_for_model(model: MixerModel) -> MixerConfig {
+    match model {
+        MixerModel::X32 => MixerConfig {
+            strip_count: 74,
+            send_bus_count: 16,
+            visible_strips: X32_VISIBLE_STRIPS,
+            send_buses: X32_SEND_BUSES,
+            matrix_sends: X32_MATRIX_SENDS,
+            dca_count: 8,
+            mute_group_count: 6,
+        },
+        MixerModel::XR18 => MixerConfig {
+            strip_count: 31,
+            send_bus_count: 6,
+            visible_strips: XR18_VISIBLE_STRIPS,
+            send_buses: XR18_SEND_BUSES,
+            matrix_sends: XR18_MATRIX_SENDS,
+            dca_count: 4,
+            mute_group_count: 4,
+        },
+    }
+}
+
 #[derive(Debug)]
 pub struct StatusApp {
     mixer_addr: Option<SocketAddr>,
@@ -116,19 +189,19 @@ pub struct StatusApp {
     discovered_mixers: Vec<DiscoveredMixer>,
     manual_target: bool,
     probe_in_flight: bool,
-    names: [Option<String>; STRIP_COUNT],
-    colors: [Option<u8>; STRIP_COUNT],
-    gains: [Option<f32>; STRIP_COUNT],
-    gain_sources: [GainSource; STRIP_COUNT],
-    gain_drag_values: [Option<f32>; STRIP_COUNT],
-    sends: [[Option<f32>; SEND_BUS_COUNT]; STRIP_COUNT],
-    pans: [Option<f32>; STRIP_COUNT],
-    faders: [Option<f32>; STRIP_COUNT],
-    meters_db: [f32; STRIP_COUNT],
+    names: [Option<String>; MAX_STRIP_COUNT],
+    colors: [Option<u8>; MAX_STRIP_COUNT],
+    gains: [Option<f32>; MAX_STRIP_COUNT],
+    gain_sources: [GainSource; MAX_STRIP_COUNT],
+    gain_drag_values: [Option<f32>; MAX_STRIP_COUNT],
+    sends: [[Option<f32>; MAX_SEND_BUS_COUNT]; MAX_STRIP_COUNT],
+    pans: [Option<f32>; MAX_STRIP_COUNT],
+    faders: [Option<f32>; MAX_STRIP_COUNT],
+    meters_db: [f32; MAX_STRIP_COUNT],
     master_meters_db: [f32; 2],
     rta_meters_db: [f32; 100],
-    muted: [Option<bool>; STRIP_COUNT],
-    soloed: [Option<bool>; STRIP_COUNT],
+    muted: [Option<bool>; MAX_STRIP_COUNT],
+    soloed: [Option<bool>; MAX_STRIP_COUNT],
     master_fader: Option<f32>,
     master_muted: Option<bool>,
     master_soloed: Option<bool>,
@@ -146,6 +219,7 @@ pub struct StatusApp {
     show_file_name: String,
     editing_scene_safes: Option<i32>,
     editing_snippet_filters: Option<i32>,
+    mixer_model: MixerModel,
 }
 
 impl Default for StatusApp {
@@ -157,18 +231,18 @@ impl Default for StatusApp {
             manual_target: false,
             probe_in_flight: false,
             names: std::array::from_fn(|_| None),
-            colors: [None; STRIP_COUNT],
-            gains: [None; STRIP_COUNT],
-            gain_sources: [GainSource::Trim; STRIP_COUNT],
-            gain_drag_values: [None; STRIP_COUNT],
-            sends: [[None; SEND_BUS_COUNT]; STRIP_COUNT],
-            pans: [None; STRIP_COUNT],
-            faders: [None; STRIP_COUNT],
-            meters_db: [-90.0; STRIP_COUNT],
+            colors: [None; MAX_STRIP_COUNT],
+            gains: [None; MAX_STRIP_COUNT],
+            gain_sources: [GainSource::Trim; MAX_STRIP_COUNT],
+            gain_drag_values: [None; MAX_STRIP_COUNT],
+            sends: [[None; MAX_SEND_BUS_COUNT]; MAX_STRIP_COUNT],
+            pans: [None; MAX_STRIP_COUNT],
+            faders: [None; MAX_STRIP_COUNT],
+            meters_db: [-90.0; MAX_STRIP_COUNT],
             master_meters_db: [-90.0, -90.0],
             rta_meters_db: [-128.0; 100],
-            muted: [None; STRIP_COUNT],
-            soloed: [None; STRIP_COUNT],
+            muted: [None; MAX_STRIP_COUNT],
+            soloed: [None; MAX_STRIP_COUNT],
             master_fader: None,
             master_muted: None,
             master_soloed: None,
@@ -186,7 +260,26 @@ impl Default for StatusApp {
             show_file_name: String::new(),
             editing_scene_safes: None,
             editing_snippet_filters: None,
+            mixer_model: MixerModel::X32,
         }
+    }
+}
+
+impl StatusApp {
+    fn config(&self) -> MixerConfig {
+        config_for_model(self.mixer_model)
+    }
+
+    fn visible_strips(&self) -> &[FaderTarget] {
+        self.config().visible_strips
+    }
+
+    fn send_buses(&self) -> &[u8] {
+        self.config().send_buses
+    }
+
+    fn matrix_sends(&self) -> &[u8] {
+        self.config().matrix_sends
     }
 }
 
@@ -291,18 +384,18 @@ pub fn new() -> (StatusApp, Task<Message>) {
         manual_target: maybe_target.is_some(),
         probe_in_flight: true,
         names: std::array::from_fn(|_| None),
-        colors: [None; STRIP_COUNT],
-        gains: [None; STRIP_COUNT],
-        gain_sources: [GainSource::Trim; STRIP_COUNT],
-        gain_drag_values: [None; STRIP_COUNT],
-        sends: [[None; SEND_BUS_COUNT]; STRIP_COUNT],
-        pans: [None; STRIP_COUNT],
-        faders: [None; STRIP_COUNT],
-        meters_db: [-90.0; STRIP_COUNT],
+        colors: [None; MAX_STRIP_COUNT],
+        gains: [None; MAX_STRIP_COUNT],
+        gain_sources: [GainSource::Trim; MAX_STRIP_COUNT],
+        gain_drag_values: [None; MAX_STRIP_COUNT],
+        sends: [[None; MAX_SEND_BUS_COUNT]; MAX_STRIP_COUNT],
+        pans: [None; MAX_STRIP_COUNT],
+        faders: [None; MAX_STRIP_COUNT],
+        meters_db: [-90.0; MAX_STRIP_COUNT],
         master_meters_db: [-90.0, -90.0],
         rta_meters_db: [-128.0; 100],
-        muted: [None; STRIP_COUNT],
-        soloed: [None; STRIP_COUNT],
+        muted: [None; MAX_STRIP_COUNT],
+        soloed: [None; MAX_STRIP_COUNT],
         master_fader: None,
         master_muted: None,
         master_soloed: None,
@@ -320,6 +413,7 @@ pub fn new() -> (StatusApp, Task<Message>) {
         show_file_name: String::new(),
         editing_scene_safes: None,
         editing_snippet_filters: None,
+        mixer_model: MixerModel::X32,
     };
 
     let task = match maybe_target {
@@ -351,6 +445,9 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                 .iter()
                 .find(|m| m.addr == addr)
                 .cloned();
+            if let Some(ref mixer) = app.discovered_mixer {
+                app.mixer_model = mixer.model;
+            }
             spawn_probe(addr)
         }
         Message::Disconnect => {
@@ -359,18 +456,19 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
             app.discovered_mixer = None;
             app.status = ConnectionStatus::Disconnected;
             app.last_error = None;
+            app.mixer_model = MixerModel::X32;
             app.names = std::array::from_fn(|_| None);
-            app.colors = [None; STRIP_COUNT];
-            app.gains = [None; STRIP_COUNT];
-            app.gain_sources = [GainSource::Trim; STRIP_COUNT];
-            app.sends = [[None; SEND_BUS_COUNT]; STRIP_COUNT];
-            app.pans = [None; STRIP_COUNT];
-            app.faders = [None; STRIP_COUNT];
-            app.meters_db = [-90.0; STRIP_COUNT];
+            app.colors = [None; MAX_STRIP_COUNT];
+            app.gains = [None; MAX_STRIP_COUNT];
+            app.gain_sources = [GainSource::Trim; MAX_STRIP_COUNT];
+            app.sends = [[None; MAX_SEND_BUS_COUNT]; MAX_STRIP_COUNT];
+            app.pans = [None; MAX_STRIP_COUNT];
+            app.faders = [None; MAX_STRIP_COUNT];
+            app.meters_db = [-90.0; MAX_STRIP_COUNT];
             app.master_meters_db = [-90.0, -90.0];
             app.rta_meters_db = [-128.0; 100];
-            app.muted = [None; STRIP_COUNT];
-            app.soloed = [None; STRIP_COUNT];
+            app.muted = [None; MAX_STRIP_COUNT];
+            app.soloed = [None; MAX_STRIP_COUNT];
             app.master_fader = None;
             app.master_muted = None;
             app.master_soloed = None;
@@ -437,27 +535,25 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
             let Some(mixer_addr) = app.mixer_addr else {
                 return Task::none();
             };
-            let target = VISIBLE_STRIPS[index];
-            let path = match target {
-                FaderTarget::Channel(n) => format!("/ch/{n:02}/config/name"),
-                FaderTarget::Aux(n) => format!("/auxin/{n:02}/config/name"),
-                FaderTarget::Bus(n) => format!("/bus/{n:02}/config/name"),
-                FaderTarget::FxRtn(n) => format!("/fxrtn/{n:02}/config/name"),
-                FaderTarget::Mtx(n) => format!("/mtx/{n:02}/config/name"),
-                FaderTarget::Dca(n) => format!("/dca/{n}/config/name"),
-                FaderTarget::Main => "/main/st/config/name".to_owned(),
-            };
+            let target = app.visible_strips()[index];
+            let base = strip_base_path(target, app.mixer_model);
+            let path = format!("{base}/config/name");
             spawn_set_parameter(mixer_addr, path, OscValue::String(name))
         }
         Message::ConsoleUpdateReceived(result) => {
             match result {
                 Ok(ConsoleUpdate::Gain(strip)) => {
-                    if let Some(index) = VISIBLE_STRIPS
+                    if let Some(index) = app
+                        .visible_strips()
                         .iter()
                         .position(|target| *target == strip.target)
                     {
                         let keep_headamp_source = matches!(
-                            (VISIBLE_STRIPS[index], app.gain_sources[index], strip.source),
+                            (
+                                app.visible_strips()[index],
+                                app.gain_sources[index],
+                                strip.source
+                            ),
                             (
                                 FaderTarget::Channel(1..=16),
                                 GainSource::Headamp(_),
@@ -475,7 +571,7 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                     index: headamp_index,
                     value,
                 }) => {
-                    for strip_index in 0..STRIP_COUNT {
+                    for strip_index in 0..MAX_STRIP_COUNT {
                         if app.gain_sources[strip_index] == GainSource::Headamp(headamp_index) {
                             app.gains[strip_index] = Some(value);
                         }
@@ -486,7 +582,8 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                         app.master_fader = Some(strip.value);
                         return Task::none();
                     }
-                    if let Some(index) = VISIBLE_STRIPS
+                    if let Some(index) = app
+                        .visible_strips()
                         .iter()
                         .position(|target| *target == strip.target)
                     {
@@ -494,7 +591,8 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                     }
                 }
                 Ok(ConsoleUpdate::Pan(strip)) => {
-                    if let Some(index) = VISIBLE_STRIPS
+                    if let Some(index) = app
+                        .visible_strips()
                         .iter()
                         .position(|target| *target == strip.target)
                     {
@@ -502,7 +600,8 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                     }
                 }
                 Ok(ConsoleUpdate::Send(strip)) => {
-                    if let Some(strip_index) = VISIBLE_STRIPS
+                    if let Some(strip_index) = app
+                        .visible_strips()
                         .iter()
                         .position(|target| *target == strip.target)
                     {
@@ -517,7 +616,8 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                         app.master_muted = Some(!strip.on);
                         return Task::none();
                     }
-                    if let Some(index) = VISIBLE_STRIPS
+                    if let Some(index) = app
+                        .visible_strips()
                         .iter()
                         .position(|target| *target == strip.target)
                     {
@@ -525,7 +625,8 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                     }
                 }
                 Ok(ConsoleUpdate::Solo(strip)) => {
-                    if let Some(index) = VISIBLE_STRIPS
+                    if let Some(index) = app
+                        .visible_strips()
                         .iter()
                         .position(|target| *target == strip.target)
                     {
@@ -533,7 +634,8 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                     }
                 }
                 Ok(ConsoleUpdate::Name(strip)) => {
-                    if let Some(index) = VISIBLE_STRIPS
+                    if let Some(index) = app
+                        .visible_strips()
                         .iter()
                         .position(|target| *target == strip.target)
                     {
@@ -549,7 +651,8 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                         app.master_color = Some(strip.value);
                         return Task::none();
                     }
-                    if let Some(index) = VISIBLE_STRIPS
+                    if let Some(index) = app
+                        .visible_strips()
                         .iter()
                         .position(|target| *target == strip.target)
                     {
@@ -577,8 +680,8 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
             let Some(mixer_addr) = app.mixer_addr else {
                 return Task::none();
             };
-            let target = VISIBLE_STRIPS[index];
-            spawn_set_gain(mixer_addr, target, source, value)
+            let target = app.visible_strips()[index];
+            spawn_set_gain(mixer_addr, target, source, value, app.mixer_model)
         }
         Message::GainReleased(index) => {
             if let Some(Some(value)) = app.gain_drag_values.get(index).copied()
@@ -599,9 +702,9 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
             let Some(mixer_addr) = app.mixer_addr else {
                 return Task::none();
             };
-            let target = VISIBLE_STRIPS[strip_index];
-            let bus = SEND_BUSES[bus_index];
-            spawn_set_send(mixer_addr, target, bus, value)
+            let target = app.visible_strips()[strip_index];
+            let bus = app.send_buses()[bus_index];
+            spawn_set_send(mixer_addr, target, bus, value, app.mixer_model)
         }
         Message::PanChanged(index, value) => {
             if let Some(pan) = app.pans.get_mut(index) {
@@ -611,8 +714,8 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
             let Some(mixer_addr) = app.mixer_addr else {
                 return Task::none();
             };
-            let target = VISIBLE_STRIPS[index];
-            spawn_set_pan(mixer_addr, target, value)
+            let target = app.visible_strips()[index];
+            spawn_set_pan(mixer_addr, target, value, app.mixer_model)
         }
         Message::FaderChanged(index, value) => {
             if let Some(fader) = app.faders.get_mut(index) {
@@ -622,8 +725,8 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
             let Some(mixer_addr) = app.mixer_addr else {
                 return Task::none();
             };
-            let target = VISIBLE_STRIPS[index];
-            spawn_set_fader(mixer_addr, target, value)
+            let target = app.visible_strips()[index];
+            spawn_set_fader(mixer_addr, target, value, app.mixer_model)
         }
         Message::MasterFaderChanged(value) => {
             app.master_fader = Some(value);
@@ -631,7 +734,7 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
             let Some(mixer_addr) = app.mixer_addr else {
                 return Task::none();
             };
-            spawn_set_fader(mixer_addr, FaderTarget::Main, value)
+            spawn_set_fader(mixer_addr, FaderTarget::Main, value, app.mixer_model)
         }
         Message::NavSelected(view) => {
             app.active_view = view;
@@ -655,7 +758,8 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
             match result {
                 Ok(names) => {
                     for strip in names {
-                        if let Some(index) = VISIBLE_STRIPS
+                        if let Some(index) = app
+                            .visible_strips()
                             .iter()
                             .position(|target| *target == strip.target)
                         {
@@ -680,7 +784,8 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                             app.master_color = Some(strip.value);
                             continue;
                         }
-                        if let Some(index) = VISIBLE_STRIPS
+                        if let Some(index) = app
+                            .visible_strips()
                             .iter()
                             .position(|target| *target == strip.target)
                         {
@@ -697,7 +802,8 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
             match result {
                 Ok(gains) => {
                     for strip in gains {
-                        if let Some(index) = VISIBLE_STRIPS
+                        if let Some(index) = app
+                            .visible_strips()
                             .iter()
                             .position(|target| *target == strip.target)
                         {
@@ -715,7 +821,8 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
             match result {
                 Ok(sends) => {
                     for strip in sends {
-                        if let Some(strip_index) = VISIBLE_STRIPS
+                        if let Some(strip_index) = app
+                            .visible_strips()
                             .iter()
                             .position(|target| *target == strip.target)
                         {
@@ -735,7 +842,8 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
             match result {
                 Ok(pans) => {
                     for strip in pans {
-                        if let Some(index) = VISIBLE_STRIPS
+                        if let Some(index) = app
+                            .visible_strips()
                             .iter()
                             .position(|target| *target == strip.target)
                         {
@@ -756,7 +864,8 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                             app.master_fader = Some(fader.value);
                             continue;
                         }
-                        if let Some(index) = VISIBLE_STRIPS
+                        if let Some(index) = app
+                            .visible_strips()
                             .iter()
                             .position(|target| *target == fader.target)
                         {
@@ -801,7 +910,8 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
             match result {
                 Ok(meters) => {
                     for meter in meters {
-                        if let Some(index) = VISIBLE_STRIPS
+                        if let Some(index) = app
+                            .visible_strips()
                             .iter()
                             .position(|target| *target == meter.target)
                         {
@@ -822,7 +932,8 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                         linear_meter_to_db(levels.main_lr[1]),
                     ];
                     for (bus_index, level) in levels.mains.iter().enumerate() {
-                        if let Some(strip_index) = VISIBLE_STRIPS
+                        if let Some(strip_index) = app
+                            .visible_strips()
                             .iter()
                             .position(|target| *target == FaderTarget::Bus((bus_index + 1) as u8))
                         {
@@ -830,7 +941,7 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                         }
                     }
                     for (matrix_index, level) in levels.matrices.iter().enumerate() {
-                        if let Some(strip_index) = VISIBLE_STRIPS.iter().position(|target| {
+                        if let Some(strip_index) = app.visible_strips().iter().position(|target| {
                             *target == FaderTarget::Mtx((matrix_index + 1) as u8)
                         }) {
                             app.meters_db[strip_index] = linear_meter_to_db(*level);
@@ -855,7 +966,7 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
             let Some(mixer_addr) = app.mixer_addr else {
                 return Task::none();
             };
-            let target = VISIBLE_STRIPS[index];
+            let target = app.visible_strips()[index];
             let currently_muted = app
                 .muted
                 .get(index)
@@ -865,7 +976,7 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
             if let Some(muted) = app.muted.get_mut(index) {
                 *muted = Some(!next_on);
             }
-            spawn_set_mute(mixer_addr, target, next_on)
+            spawn_set_mute(mixer_addr, target, next_on, app.mixer_model)
         }
         Message::MasterMutePressed => {
             let Some(mixer_addr) = app.mixer_addr else {
@@ -874,7 +985,7 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
             let currently_muted = app.master_muted.unwrap_or(false);
             let next_on = currently_muted;
             app.master_muted = Some(!next_on);
-            spawn_set_mute(mixer_addr, FaderTarget::Main, next_on)
+            spawn_set_mute(mixer_addr, FaderTarget::Main, next_on, app.mixer_model)
         }
         Message::MutesLoaded(result) => {
             match result {
@@ -884,7 +995,8 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                             app.master_muted = Some(!strip.on);
                             continue;
                         }
-                        if let Some(index) = VISIBLE_STRIPS
+                        if let Some(index) = app
+                            .visible_strips()
                             .iter()
                             .position(|target| *target == strip.target)
                         {
@@ -905,7 +1017,7 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::SoloPressed(index) => {
-            let target = VISIBLE_STRIPS[index];
+            let target = app.visible_strips()[index];
             let next_on = !app
                 .soloed
                 .get(index)
@@ -920,7 +1032,7 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
             let Some(mixer_addr) = app.mixer_addr else {
                 return Task::none();
             };
-            spawn_set_solo(mixer_addr, target, next_on)
+            spawn_set_solo(mixer_addr, target, next_on, app.mixer_model)
         }
         Message::MasterSoloPressed => {
             let next_on = !app.master_soloed.unwrap_or(false);
@@ -931,7 +1043,8 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
             match result {
                 Ok(solos) => {
                     for strip in solos {
-                        if let Some(index) = VISIBLE_STRIPS
+                        if let Some(index) = app
+                            .visible_strips()
                             .iter()
                             .position(|target| *target == strip.target)
                         {
@@ -959,7 +1072,7 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                     app.discovered_mixers = mixers;
                     if app.discovered_mixers.is_empty() {
                         app.last_error =
-                            Some("no X32 mixer discovered on the local network".to_owned());
+                            Some("no mixer discovered on the local network".to_owned());
                     } else {
                         app.last_error = None;
                     }
@@ -976,13 +1089,19 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
             let Some(mixer_addr) = app.mixer_addr else {
                 return Task::none();
             };
-            spawn_scene_action(mixer_addr, "goscene", index)
+            match app.mixer_model {
+                MixerModel::X32 => spawn_scene_action(mixer_addr, "goscene", index),
+                MixerModel::XR18 => spawn_snapshot_action(mixer_addr, "load", index),
+            }
         }
         Message::SceneSave(index) => {
             let Some(mixer_addr) = app.mixer_addr else {
                 return Task::none();
             };
-            spawn_scene_action(mixer_addr, "savescene", index)
+            match app.mixer_model {
+                MixerModel::X32 => spawn_scene_action(mixer_addr, "savescene", index),
+                MixerModel::XR18 => spawn_snapshot_action(mixer_addr, "save", index),
+            }
         }
         Message::SnippetRecall(index) => {
             let Some(mixer_addr) = app.mixer_addr else {
@@ -1003,7 +1122,7 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
             spawn_recorder_action(mixer_addr, action)
         }
         Message::CopyStrip(index) => {
-            app.copy_buffer = Some(VISIBLE_STRIPS[index]);
+            app.copy_buffer = Some(app.visible_strips()[index]);
             Task::none()
         }
         Message::PasteStrip(index) => {
@@ -1013,7 +1132,7 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
             let Some(source) = app.copy_buffer else {
                 return Task::none();
             };
-            let target = VISIBLE_STRIPS[index];
+            let target = app.visible_strips()[index];
             spawn_copy_paste(mixer_addr, source, target)
         }
         Message::DcaSpill(dca) => {
@@ -1126,19 +1245,25 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
             let was_connected = matches!(app.status, ConnectionStatus::Connected(_));
 
             match result {
-                Ok(ProbeOutcome::Connected { response, .. }) => {
+                Ok(ProbeOutcome::Connected {
+                    response, model, ..
+                }) => {
                     app.status = ConnectionStatus::Connected(response);
+                    if let Some(detected) = model {
+                        app.mixer_model = detected;
+                    }
                     if !was_connected && let Some(mixer_addr) = app.mixer_addr {
+                        let model = app.mixer_model;
                         return Task::batch([
-                            spawn_load_names(mixer_addr),
-                            spawn_load_colors(mixer_addr),
-                            spawn_load_gains(mixer_addr),
-                            spawn_load_sends(mixer_addr),
-                            spawn_load_pans(mixer_addr),
-                            spawn_load_faders(mixer_addr),
-                            spawn_load_mutes(mixer_addr),
-                            spawn_load_solos(mixer_addr),
-                            spawn_load_mute_groups(mixer_addr),
+                            spawn_load_names(mixer_addr, model),
+                            spawn_load_colors(mixer_addr, model),
+                            spawn_load_gains(mixer_addr, model),
+                            spawn_load_sends(mixer_addr, model),
+                            spawn_load_pans(mixer_addr, model),
+                            spawn_load_faders(mixer_addr, model),
+                            spawn_load_mutes(mixer_addr, model),
+                            spawn_load_solos(mixer_addr, model),
+                            spawn_load_mute_groups(mixer_addr, model),
                         ]);
                     }
                 }
@@ -1146,15 +1271,15 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                     app.status = ConnectionStatus::Disconnected;
                     app.last_error = None;
                     app.names = std::array::from_fn(|_| None);
-                    app.gains = [None; STRIP_COUNT];
-                    app.gain_sources = [GainSource::Trim; STRIP_COUNT];
-                    app.sends = [[None; SEND_BUS_COUNT]; STRIP_COUNT];
-                    app.pans = [None; STRIP_COUNT];
-                    app.faders = [None; STRIP_COUNT];
-                    app.meters_db = [-90.0; STRIP_COUNT];
+                    app.gains = [None; MAX_STRIP_COUNT];
+                    app.gain_sources = [GainSource::Trim; MAX_STRIP_COUNT];
+                    app.sends = [[None; MAX_SEND_BUS_COUNT]; MAX_STRIP_COUNT];
+                    app.pans = [None; MAX_STRIP_COUNT];
+                    app.faders = [None; MAX_STRIP_COUNT];
+                    app.meters_db = [-90.0; MAX_STRIP_COUNT];
                     app.master_meters_db = [-90.0, -90.0];
-                    app.muted = [None; STRIP_COUNT];
-                    app.soloed = [None; STRIP_COUNT];
+                    app.muted = [None; MAX_STRIP_COUNT];
+                    app.soloed = [None; MAX_STRIP_COUNT];
                     app.master_fader = None;
                     app.master_muted = None;
                     app.master_soloed = None;
@@ -1168,15 +1293,15 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                     app.status = ConnectionStatus::Disconnected;
                     app.last_error = Some(error);
                     app.names = std::array::from_fn(|_| None);
-                    app.gains = [None; STRIP_COUNT];
-                    app.gain_sources = [GainSource::Trim; STRIP_COUNT];
-                    app.sends = [[None; SEND_BUS_COUNT]; STRIP_COUNT];
-                    app.pans = [None; STRIP_COUNT];
-                    app.faders = [None; STRIP_COUNT];
-                    app.meters_db = [-90.0; STRIP_COUNT];
+                    app.gains = [None; MAX_STRIP_COUNT];
+                    app.gain_sources = [GainSource::Trim; MAX_STRIP_COUNT];
+                    app.sends = [[None; MAX_SEND_BUS_COUNT]; MAX_STRIP_COUNT];
+                    app.pans = [None; MAX_STRIP_COUNT];
+                    app.faders = [None; MAX_STRIP_COUNT];
+                    app.meters_db = [-90.0; MAX_STRIP_COUNT];
                     app.master_meters_db = [-90.0, -90.0];
-                    app.muted = [None; STRIP_COUNT];
-                    app.soloed = [None; STRIP_COUNT];
+                    app.muted = [None; MAX_STRIP_COUNT];
+                    app.soloed = [None; MAX_STRIP_COUNT];
                     app.master_fader = None;
                     app.master_muted = None;
                     app.master_soloed = None;
@@ -1199,10 +1324,10 @@ pub fn subscription(_app: &StatusApp) -> Subscription<Message> {
     if let Some(mixer_addr) = _app.mixer_addr {
         Subscription::batch([
             ticker,
-            state_subscription(mixer_addr),
-            meter_subscription(mixer_addr),
-            master_meter_subscription(mixer_addr),
-            rta_meter_subscription(mixer_addr),
+            state_subscription(mixer_addr, _app.mixer_model),
+            meter_subscription(mixer_addr, _app.mixer_model),
+            master_meter_subscription(mixer_addr, _app.mixer_model),
+            rta_meter_subscription(mixer_addr, _app.mixer_model),
         ])
     } else {
         ticker
@@ -1286,11 +1411,10 @@ fn mixer_selection_view(app: &StatusApp) -> Element<'_, Message> {
                 let name = mixer.name.as_deref().unwrap_or("Unknown Mixer");
                 let ip = mixer.addr.ip().to_string();
                 let detail = match (&mixer.model, &mixer.firmware) {
-                    (Some(model), Some(firmware)) => {
+                    (model, Some(firmware)) => {
                         format!("{model} · firmware {firmware}")
                     }
-                    (Some(model), None) => model.clone(),
-                    _ => String::new(),
+                    (model, None) => model.to_string(),
                 };
 
                 let icon = audio_lines().size(24);
@@ -1375,7 +1499,8 @@ pub struct NavTab {
 
 fn spill_bar(app: &StatusApp) -> Element<'static, Message> {
     // Mute group toggle buttons
-    let mute_buttons: Element<'_, Message> = (1..=6)
+    let mute_count = app.config().mute_group_count;
+    let mute_buttons: Element<'_, Message> = (1..=mute_count)
         .fold(row!().spacing(4), |row, grp| {
             let path = format!("/config/mute/{grp}");
             let active = param_bool(app, &path);
@@ -1411,9 +1536,11 @@ fn spill_bar(app: &StatusApp) -> Element<'static, Message> {
         .into();
 
     // Spill indicator buttons (shown when DCA spill is active)
+    let dca_count = app.config().dca_count;
     let spill_buttons: Element<'_, Message> = if let Some(dca) = app.dca_spill {
-        (1..=8)
+        (1..=dca_count)
             .fold(row!().spacing(2), |row, n| {
+                let n = n as u8;
                 let active = dca == n;
                 let (bg, border) = if active {
                     (
@@ -1477,9 +1604,11 @@ fn spill_bar(app: &StatusApp) -> Element<'static, Message> {
         };
 
     // DCA spill buttons (only visible when no spill is active)
+    let dca_count = app.config().dca_count;
     let dca_buttons: Element<'_, Message> = if app.dca_spill.is_none() && app.mute_spill.is_none() {
-        (1..=8)
+        (1..=dca_count)
             .fold(row!().spacing(4), |row, dca| {
+                let dca = dca as u8;
                 row.push(
                     button(text(format!("D{dca}")).size(11))
                         .on_press(Message::DcaSpill(dca))
@@ -1712,13 +1841,13 @@ fn mixer_accent_color() -> Color {
 
 fn strip_in_spill(app: &StatusApp, target: FaderTarget, _index: usize) -> bool {
     if let Some(dca) = app.dca_spill {
-        let base = strip_base_path(target);
+        let base = strip_base_path(target, app.mixer_model);
         let dca_path = format!("{base}/grp/dca");
         let dca_val = param_int(app, &dca_path);
         return (dca_val & (1 << (dca - 1))) != 0;
     }
     if let Some(grp) = app.mute_spill {
-        let base = strip_base_path(target);
+        let base = strip_base_path(target, app.mixer_model);
         let mute_path = format!("{base}/grp/mute");
         let mute_val = param_int(app, &mute_path);
         return (mute_val & (1 << (grp - 1))) != 0;
@@ -1745,44 +1874,48 @@ fn spawn_probe(mixer_addr: SocketAddr) -> Task<Message> {
     )
 }
 
-fn spawn_load_faders(mixer_addr: SocketAddr) -> Task<Message> {
+fn spawn_load_faders(mixer_addr: SocketAddr, model: MixerModel) -> Task<Message> {
     Task::perform(
         async move {
             FaderBankProbe::new(mixer_addr)
+                .with_model(model)
                 .with_timeout(Duration::from_millis(250))
-                .load(&[VISIBLE_STRIPS.as_slice(), &[FaderTarget::Main]].concat())
+                .load(&[config_for_model(model).visible_strips, &[FaderTarget::Main]].concat())
                 .map_err(|error| error.to_string())
         },
         Message::FadersLoaded,
     )
 }
 
-fn spawn_load_names(mixer_addr: SocketAddr) -> Task<Message> {
+fn spawn_load_names(mixer_addr: SocketAddr, model: MixerModel) -> Task<Message> {
     Task::perform(
         async move {
             NameBankProbe::new(mixer_addr)
+                .with_model(model)
                 .with_timeout(Duration::from_millis(250))
-                .load(&VISIBLE_STRIPS)
+                .load(config_for_model(model).visible_strips)
                 .map_err(|error| error.to_string())
         },
         Message::NamesLoaded,
     )
 }
 
-fn spawn_load_colors(mixer_addr: SocketAddr) -> Task<Message> {
+fn spawn_load_colors(mixer_addr: SocketAddr, model: MixerModel) -> Task<Message> {
     Task::perform(
         async move {
             ColorBankProbe::new(mixer_addr)
+                .with_model(model)
                 .with_timeout(Duration::from_millis(250))
-                .load(&[VISIBLE_STRIPS.as_slice(), &[FaderTarget::Main]].concat())
+                .load(&[config_for_model(model).visible_strips, &[FaderTarget::Main]].concat())
                 .map_err(|error| error.to_string())
         },
         Message::ColorsLoaded,
     )
 }
 
-fn spawn_load_gains(mixer_addr: SocketAddr) -> Task<Message> {
-    let targets: Vec<FaderTarget> = VISIBLE_STRIPS
+fn spawn_load_gains(mixer_addr: SocketAddr, model: MixerModel) -> Task<Message> {
+    let targets: Vec<FaderTarget> = config_for_model(model)
+        .visible_strips
         .iter()
         .filter(|t| {
             !matches!(
@@ -1798,6 +1931,7 @@ fn spawn_load_gains(mixer_addr: SocketAddr) -> Task<Message> {
     Task::perform(
         async move {
             GainBankProbe::new(mixer_addr)
+                .with_model(model)
                 .with_timeout(Duration::from_millis(250))
                 .load(&targets)
                 .map_err(|error| error.to_string())
@@ -1806,8 +1940,9 @@ fn spawn_load_gains(mixer_addr: SocketAddr) -> Task<Message> {
     )
 }
 
-fn spawn_load_sends(mixer_addr: SocketAddr) -> Task<Message> {
-    let channel_aux_targets: Vec<FaderTarget> = VISIBLE_STRIPS
+fn spawn_load_sends(mixer_addr: SocketAddr, model: MixerModel) -> Task<Message> {
+    let channel_aux_targets: Vec<FaderTarget> = config_for_model(model)
+        .visible_strips
         .iter()
         .filter(|t| {
             matches!(
@@ -1817,7 +1952,8 @@ fn spawn_load_sends(mixer_addr: SocketAddr) -> Task<Message> {
         })
         .cloned()
         .collect();
-    let bus_targets: Vec<FaderTarget> = VISIBLE_STRIPS
+    let bus_targets: Vec<FaderTarget> = config_for_model(model)
+        .visible_strips
         .iter()
         .filter(|t| matches!(t, FaderTarget::Bus(_) | FaderTarget::Main))
         .cloned()
@@ -1826,8 +1962,9 @@ fn spawn_load_sends(mixer_addr: SocketAddr) -> Task<Message> {
         Task::perform(
             async move {
                 SendBankProbe::new(mixer_addr)
+                    .with_model(model)
                     .with_timeout(Duration::from_millis(250))
-                    .load(&channel_aux_targets, &SEND_BUSES)
+                    .load(&channel_aux_targets, config_for_model(model).send_buses)
                     .map_err(|error| error.to_string())
             },
             Message::SendsLoaded,
@@ -1835,8 +1972,9 @@ fn spawn_load_sends(mixer_addr: SocketAddr) -> Task<Message> {
         Task::perform(
             async move {
                 SendBankProbe::new(mixer_addr)
+                    .with_model(model)
                     .with_timeout(Duration::from_millis(250))
-                    .load(&bus_targets, &MATRIX_SENDS)
+                    .load(&bus_targets, config_for_model(model).matrix_sends)
                     .map_err(|error| error.to_string())
             },
             Message::SendsLoaded,
@@ -1844,8 +1982,9 @@ fn spawn_load_sends(mixer_addr: SocketAddr) -> Task<Message> {
     ])
 }
 
-fn spawn_load_pans(mixer_addr: SocketAddr) -> Task<Message> {
-    let targets: Vec<FaderTarget> = VISIBLE_STRIPS
+fn spawn_load_pans(mixer_addr: SocketAddr, model: MixerModel) -> Task<Message> {
+    let targets: Vec<FaderTarget> = config_for_model(model)
+        .visible_strips
         .iter()
         .filter(|t| !matches!(t, FaderTarget::Dca(_) | FaderTarget::Mtx(_)))
         .cloned()
@@ -1853,6 +1992,7 @@ fn spawn_load_pans(mixer_addr: SocketAddr) -> Task<Message> {
     Task::perform(
         async move {
             PanBankProbe::new(mixer_addr)
+                .with_model(model)
                 .with_timeout(Duration::from_millis(250))
                 .load(&targets)
                 .map_err(|error| error.to_string())
@@ -1861,20 +2001,22 @@ fn spawn_load_pans(mixer_addr: SocketAddr) -> Task<Message> {
     )
 }
 
-fn spawn_load_mutes(mixer_addr: SocketAddr) -> Task<Message> {
+fn spawn_load_mutes(mixer_addr: SocketAddr, model: MixerModel) -> Task<Message> {
     Task::perform(
         async move {
             MuteBankProbe::new(mixer_addr)
+                .with_model(model)
                 .with_timeout(Duration::from_millis(250))
-                .load(&[VISIBLE_STRIPS.as_slice(), &[FaderTarget::Main]].concat())
+                .load(&[config_for_model(model).visible_strips, &[FaderTarget::Main]].concat())
                 .map_err(|error| error.to_string())
         },
         Message::MutesLoaded,
     )
 }
 
-fn spawn_load_solos(mixer_addr: SocketAddr) -> Task<Message> {
-    let targets: Vec<FaderTarget> = VISIBLE_STRIPS
+fn spawn_load_solos(mixer_addr: SocketAddr, model: MixerModel) -> Task<Message> {
+    let targets: Vec<FaderTarget> = config_for_model(model)
+        .visible_strips
         .iter()
         .filter(|t| !matches!(t, FaderTarget::Mtx(_) | FaderTarget::Dca(_)))
         .cloned()
@@ -1882,6 +2024,7 @@ fn spawn_load_solos(mixer_addr: SocketAddr) -> Task<Message> {
     Task::perform(
         async move {
             SoloBankProbe::new(mixer_addr)
+                .with_model(model)
                 .with_timeout(Duration::from_millis(250))
                 .load(&targets)
                 .map_err(|error| error.to_string())
@@ -1890,10 +2033,16 @@ fn spawn_load_solos(mixer_addr: SocketAddr) -> Task<Message> {
     )
 }
 
-fn spawn_set_fader(mixer_addr: SocketAddr, target: FaderTarget, value: f32) -> Task<Message> {
+fn spawn_set_fader(
+    mixer_addr: SocketAddr,
+    target: FaderTarget,
+    value: f32,
+    model: MixerModel,
+) -> Task<Message> {
     Task::perform(
         async move {
             FaderBankProbe::new(mixer_addr)
+                .with_model(model)
                 .with_timeout(Duration::from_millis(250))
                 .set(target, value)
                 .map_err(|error| error.to_string())
@@ -1902,10 +2051,16 @@ fn spawn_set_fader(mixer_addr: SocketAddr, target: FaderTarget, value: f32) -> T
     )
 }
 
-fn spawn_set_pan(mixer_addr: SocketAddr, target: FaderTarget, value: f32) -> Task<Message> {
+fn spawn_set_pan(
+    mixer_addr: SocketAddr,
+    target: FaderTarget,
+    value: f32,
+    model: MixerModel,
+) -> Task<Message> {
     Task::perform(
         async move {
             PanBankProbe::new(mixer_addr)
+                .with_model(model)
                 .with_timeout(Duration::from_millis(250))
                 .set(target, value)
                 .map_err(|error| error.to_string())
@@ -1919,10 +2074,12 @@ fn spawn_set_send(
     target: FaderTarget,
     bus: u8,
     value: f32,
+    model: MixerModel,
 ) -> Task<Message> {
     Task::perform(
         async move {
             SendBankProbe::new(mixer_addr)
+                .with_model(model)
                 .with_timeout(Duration::from_millis(250))
                 .set(target, bus, value)
                 .map_err(|error| error.to_string())
@@ -1936,10 +2093,12 @@ fn spawn_set_gain(
     target: FaderTarget,
     source: GainSource,
     value: f32,
+    model: MixerModel,
 ) -> Task<Message> {
     Task::perform(
         async move {
             GainBankProbe::new(mixer_addr)
+                .with_model(model)
                 .with_timeout(Duration::from_millis(250))
                 .set(target, source, value)
                 .map_err(|error| error.to_string())
@@ -1948,10 +2107,16 @@ fn spawn_set_gain(
     )
 }
 
-fn spawn_set_mute(mixer_addr: SocketAddr, target: FaderTarget, on: bool) -> Task<Message> {
+fn spawn_set_mute(
+    mixer_addr: SocketAddr,
+    target: FaderTarget,
+    on: bool,
+    model: MixerModel,
+) -> Task<Message> {
     Task::perform(
         async move {
             MuteBankProbe::new(mixer_addr)
+                .with_model(model)
                 .with_timeout(Duration::from_millis(250))
                 .set(target, on)
                 .map_err(|error| error.to_string())
@@ -1960,10 +2125,16 @@ fn spawn_set_mute(mixer_addr: SocketAddr, target: FaderTarget, on: bool) -> Task
     )
 }
 
-fn spawn_set_solo(mixer_addr: SocketAddr, target: FaderTarget, on: bool) -> Task<Message> {
+fn spawn_set_solo(
+    mixer_addr: SocketAddr,
+    target: FaderTarget,
+    on: bool,
+    model: MixerModel,
+) -> Task<Message> {
     Task::perform(
         async move {
             SoloBankProbe::new(mixer_addr)
+                .with_model(model)
                 .with_timeout(Duration::from_millis(250))
                 .set(target, on)
                 .map_err(|error| error.to_string())
@@ -2006,6 +2177,23 @@ fn spawn_scene_action(mixer_addr: SocketAddr, action: &'static str, index: i32) 
     Task::perform(
         async move {
             let path = format!("/-action/{action}");
+            crate::ParameterProbe::new(mixer_addr)
+                .with_timeout(Duration::from_millis(500))
+                .set(&path, OscValue::Int(index))
+                .map_err(|error| error.to_string())
+        },
+        Message::ParameterSetFinished,
+    )
+}
+
+fn spawn_snapshot_action(
+    mixer_addr: SocketAddr,
+    action: &'static str,
+    index: i32,
+) -> Task<Message> {
+    Task::perform(
+        async move {
+            let path = format!("/-snap/{action}");
             crate::ParameterProbe::new(mixer_addr)
                 .with_timeout(Duration::from_millis(500))
                 .set(&path, OscValue::Int(index))
@@ -2087,63 +2275,78 @@ fn panel_parameter_paths(app: &StatusApp) -> Option<Vec<String>> {
     let selected = app.selected_strip?;
     let (index, target, base) = match selected {
         SelectedStrip::Strip(index) => {
-            let target = VISIBLE_STRIPS[index];
-            (index, target, strip_base_path(target))
+            let target = app.visible_strips()[index];
+            (index, target, strip_base_path(target, app.mixer_model))
         }
         SelectedStrip::Master => {
+            let base = main_base_path(app.mixer_model);
             return match app.active_view {
                 AppView::Eq => {
-                    let mut p = vec!["/main/st/eq/on".to_owned()];
+                    let mut p = vec![format!("{base}/eq/on")];
                     for band in 1..=6 {
-                        p.push(format!("/main/st/eq/{band:02}/on"));
-                        p.push(format!("/main/st/eq/{band:02}/f"));
-                        p.push(format!("/main/st/eq/{band:02}/g"));
-                        p.push(format!("/main/st/eq/{band:02}/q"));
+                        p.push(format!("{base}/eq/{band:02}/on"));
+                        p.push(format!("{base}/eq/{band:02}/f"));
+                        p.push(format!("{base}/eq/{band:02}/g"));
+                        p.push(format!("{base}/eq/{band:02}/q"));
                     }
                     Some(p)
                 }
                 AppView::Dyn => Some(vec![
-                    "/main/st/dyn/on".to_owned(),
-                    "/main/st/dyn/thr".to_owned(),
-                    "/main/st/dyn/ratio".to_owned(),
-                    "/main/st/dyn/knee".to_owned(),
-                    "/main/st/dyn/mgain".to_owned(),
-                    "/main/st/dyn/attack".to_owned(),
-                    "/main/st/dyn/hold".to_owned(),
-                    "/main/st/dyn/release".to_owned(),
-                    "/main/st/dyn/mix".to_owned(),
+                    format!("{base}/dyn/on"),
+                    format!("{base}/dyn/thr"),
+                    format!("{base}/dyn/ratio"),
+                    format!("{base}/dyn/knee"),
+                    format!("{base}/dyn/mgain"),
+                    format!("{base}/dyn/attack"),
+                    format!("{base}/dyn/hold"),
+                    format!("{base}/dyn/release"),
+                    format!("{base}/dyn/mix"),
                 ]),
-                AppView::Config => Some(vec![
-                    "/main/st/insert/on".to_owned(),
-                    "/main/st/insert/pos".to_owned(),
-                    "/main/st/insert/sel".to_owned(),
-                    "/main/m/insert/on".to_owned(),
-                    "/main/m/insert/pos".to_owned(),
-                    "/main/m/insert/sel".to_owned(),
-                ]),
+                AppView::Config => {
+                    let mut paths = vec![
+                        format!("{base}/insert/on"),
+                        format!("{base}/insert/pos"),
+                        format!("{base}/insert/sel"),
+                    ];
+                    if app.mixer_model == MixerModel::X32 {
+                        paths.push("/main/m/insert/on".to_string());
+                        paths.push("/main/m/insert/pos".to_string());
+                        paths.push("/main/m/insert/sel".to_string());
+                    }
+                    Some(paths)
+                }
                 AppView::Sends => {
                     let mut p = Vec::new();
-                    for mtx in 1..=6 {
-                        p.push(format!("/main/st/mix/{mtx:02}/level"));
-                        p.push(format!("/main/st/mix/{mtx:02}/on"));
+                    if app.mixer_model == MixerModel::X32 {
+                        for mtx in 1..=6 {
+                            p.push(format!("{base}/mix/{mtx:02}/level"));
+                            p.push(format!("{base}/mix/{mtx:02}/on"));
+                        }
+                        for mtx in (1..=6).step_by(2) {
+                            p.push(format!("{base}/mix/{mtx:02}/pan"));
+                        }
                     }
-                    for mtx in (1..=6).step_by(2) {
-                        p.push(format!("/main/st/mix/{mtx:02}/pan"));
+                    p.push(format!("{base}/mix/on"));
+                    p.push(format!("{base}/mix/fader"));
+                    p.push(format!("{base}/mix/pan"));
+                    if app.mixer_model == MixerModel::X32 {
+                        p.push("/main/m/mix/on".to_string());
+                        p.push("/main/m/mix/fader".to_string());
                     }
-                    p.push("/main/st/mix/on".to_owned());
-                    p.push("/main/st/mix/fader".to_owned());
-                    p.push("/main/st/mix/pan".to_owned());
-                    p.push("/main/m/mix/on".to_owned());
-                    p.push("/main/m/mix/fader".to_owned());
                     Some(p)
                 }
-                AppView::Main => Some(vec![
-                    "/main/st/mix/on".to_owned(),
-                    "/main/st/mix/fader".to_owned(),
-                    "/main/st/mix/pan".to_owned(),
-                    "/main/m/mix/on".to_owned(),
-                    "/main/m/mix/fader".to_owned(),
-                ]),
+                AppView::Main => {
+                    let mut paths = vec![
+                        format!("{base}/mix/on"),
+                        format!("{base}/mix/fader"),
+                        format!("{base}/mix/pan"),
+                    ];
+                    if app.mixer_model == MixerModel::X32 {
+                        paths.push("/main/m/mix/on".to_string());
+                        paths.push("/main/m/mix/fader".to_string());
+                    }
+                    Some(paths)
+                }
                 _ => None,
             };
         }
@@ -2246,8 +2449,18 @@ fn panel_parameter_paths(app: &StatusApp) -> Option<Vec<String>> {
                     GainSource::Headamp(idx) => idx,
                     _ => ch - 1,
                 };
-                p.push(format!("/headamp/{headamp_index:03}/phantom"));
-                p.push(format!("/headamp/{headamp_index:03}/gain"));
+                let (hp, hg) = match app.mixer_model {
+                    MixerModel::X32 => (
+                        format!("/headamp/{headamp_index:03}/phantom"),
+                        format!("/headamp/{headamp_index:03}/gain"),
+                    ),
+                    MixerModel::XR18 => (
+                        format!("/headamp/{headamp_index:02}/phantom"),
+                        format!("/headamp/{headamp_index:02}/gain"),
+                    ),
+                };
+                p.push(hp);
+                p.push(hg);
             }
             if matches!(
                 target,
@@ -2259,7 +2472,8 @@ fn panel_parameter_paths(app: &StatusApp) -> Option<Vec<String>> {
                 p.push(format!("{base}/grp/dca"));
                 p.push(format!("{base}/grp/mute"));
             }
-            if let FaderTarget::Channel(ch) = target
+            if app.mixer_model == MixerModel::X32
+                && let FaderTarget::Channel(ch) = target
                 && ch <= 8
             {
                 p.push(format!("{base}/amix/on"));
@@ -2281,39 +2495,53 @@ fn panel_parameter_paths(app: &StatusApp) -> Option<Vec<String>> {
             let mut p = Vec::new();
             match target {
                 FaderTarget::Channel(_) | FaderTarget::Aux(_) | FaderTarget::FxRtn(_) => {
-                    for bus in 1..=16 {
+                    let send_count = if app.mixer_model == MixerModel::X32 {
+                        16
+                    } else {
+                        6
+                    };
+                    for bus in 1..=send_count {
                         p.push(format!("{base}/mix/{bus:02}/level"));
                         p.push(format!("{base}/mix/{bus:02}/on"));
                     }
-                    for bus in (1..=16).step_by(2) {
+                    for bus in (1..=send_count).step_by(2) {
                         p.push(format!("{base}/mix/{bus:02}/pan"));
                         p.push(format!("{base}/mix/{bus:02}/type"));
                     }
-                    for bus in (1..=16).step_by(2) {
-                        p.push(format!("/bus/{bus:02}/mix/st"));
+                    for bus in (1..=send_count).step_by(2) {
+                        let bus_st_path = if app.mixer_model == MixerModel::X32 {
+                            format!("/bus/{bus:02}/mix/st")
+                        } else {
+                            format!("/bus/{bus}/mix/st")
+                        };
+                        p.push(bus_st_path);
                     }
                     p.push(format!("{base}/mix/fader"));
                     p.push(format!("{base}/mix/st"));
                     p.push(format!("{base}/mix/pan"));
-                    p.push(format!("{base}/mix/mono"));
-                    p.push(format!("{base}/mix/mlevel"));
+                    if app.mixer_model == MixerModel::X32 {
+                        p.push(format!("{base}/mix/mono"));
+                        p.push(format!("{base}/mix/mlevel"));
+                    }
                 }
                 FaderTarget::Bus(_) => {
-                    for mtx in 1..=6 {
-                        p.push(format!("{base}/mix/{mtx:02}/level"));
-                        p.push(format!("{base}/mix/{mtx:02}/on"));
-                    }
-                    for mtx in (1..=6).step_by(2) {
-                        p.push(format!("{base}/mix/{mtx:02}/pan"));
-                    }
-                    for mtx in (1..=6).step_by(2) {
-                        p.push(format!("/mtx/{mtx:02}/mix/st"));
+                    if app.mixer_model == MixerModel::X32 {
+                        for mtx in 1..=6 {
+                            p.push(format!("{base}/mix/{mtx:02}/level"));
+                            p.push(format!("{base}/mix/{mtx:02}/on"));
+                        }
+                        for mtx in (1..=6).step_by(2) {
+                            p.push(format!("{base}/mix/{mtx:02}/pan"));
+                        }
+                        for mtx in (1..=6).step_by(2) {
+                            p.push(format!("/mtx/{mtx:02}/mix/st"));
+                        }
+                        p.push(format!("{base}/mix/mono"));
+                        p.push(format!("{base}/mix/mlevel"));
                     }
                     p.push(format!("{base}/mix/fader"));
                     p.push(format!("{base}/mix/st"));
                     p.push(format!("{base}/mix/pan"));
-                    p.push(format!("{base}/mix/mono"));
-                    p.push(format!("{base}/mix/mlevel"));
                 }
                 FaderTarget::Mtx(_) => {
                     p.push(format!("{base}/mix/on"));
@@ -2356,7 +2584,12 @@ fn panel_parameter_paths(app: &StatusApp) -> Option<Vec<String>> {
         }
         AppView::Fx => {
             let mut p = Vec::new();
-            for slot in 1..=8 {
+            let fx_slots = if app.mixer_model == MixerModel::X32 {
+                8
+            } else {
+                4
+            };
+            for slot in 1..=fx_slots {
                 let fx_base = format!("/fx/{slot:02}");
                 p.push(format!("{fx_base}/type"));
                 if slot <= 4 {
@@ -2375,8 +2608,9 @@ fn panel_parameter_paths(app: &StatusApp) -> Option<Vec<String>> {
     Some(paths)
 }
 
-fn spawn_load_mute_groups(mixer_addr: SocketAddr) -> Task<Message> {
-    let paths: Vec<String> = (1..=6).map(|n| format!("/config/mute/{n}")).collect();
+fn spawn_load_mute_groups(mixer_addr: SocketAddr, model: MixerModel) -> Task<Message> {
+    let count = if model == MixerModel::X32 { 6 } else { 4 };
+    let paths: Vec<String> = (1..=count).map(|n| format!("/config/mute/{n}")).collect();
     Task::perform(
         async move {
             crate::ParameterProbe::new(mixer_addr)
@@ -2391,30 +2625,43 @@ fn spawn_load_mute_groups(mixer_addr: SocketAddr) -> Task<Message> {
 fn spawn_load_panel_parameters(app: &StatusApp, mixer_addr: SocketAddr) -> Option<Task<Message>> {
     match app.active_view {
         AppView::Scenes => {
-            let mut scene_paths: Vec<String> = (1..=100)
-                .map(|i| format!("/-show/showfile/scene/{i:03}/name"))
-                .chain((1..=100).map(|i| format!("/-show/showfile/scene/{i:03}/hasData")))
-                .chain((1..=100).map(|i| format!("/-show/showfile/scene/{i:03}/safes")))
-                .chain((1..=100).map(|i| format!("/-show/showfile/scene/{i:03}/notes")))
-                .collect();
-            let mut cue_paths: Vec<String> = (0..100)
-                .map(|i| format!("/-show/showfile/cue/{i:03}/name"))
-                .chain((0..100).map(|i| format!("/-show/showfile/cue/{i:03}/scene")))
-                .chain((0..100).map(|i| format!("/-show/showfile/cue/{i:03}/skip")))
-                .chain((0..100).map(|i| format!("/-show/showfile/cue/{i:03}/miditype")))
-                .chain((0..100).map(|i| format!("/-show/showfile/cue/{i:03}/midichan")))
-                .chain((0..100).map(|i| format!("/-show/showfile/cue/{i:03}/midipara1")))
-                .chain((0..100).map(|i| format!("/-show/showfile/cue/{i:03}/midipara2")))
-                .collect();
-            let mut snippet_paths: Vec<String> = (0..100)
-                .map(|i| format!("/-show/showfile/snippet/{i:03}/name"))
-                .chain((0..100).map(|i| format!("/-show/showfile/snippet/{i:03}/hasData")))
-                .collect();
-            let all_paths = scene_paths
-                .drain(..)
-                .chain(cue_paths.drain(..))
-                .chain(snippet_paths.drain(..))
-                .collect::<Vec<_>>();
+            let all_paths: Vec<String> = match app.mixer_model {
+                MixerModel::X32 => {
+                    let mut scene_paths: Vec<String> = (1..=100)
+                        .map(|i| format!("/-show/showfile/scene/{i:03}/name"))
+                        .chain((1..=100).map(|i| format!("/-show/showfile/scene/{i:03}/hasData")))
+                        .chain((1..=100).map(|i| format!("/-show/showfile/scene/{i:03}/safes")))
+                        .chain((1..=100).map(|i| format!("/-show/showfile/scene/{i:03}/notes")))
+                        .collect();
+                    let mut cue_paths: Vec<String> = (0..100)
+                        .map(|i| format!("/-show/showfile/cue/{i:03}/name"))
+                        .chain((0..100).map(|i| format!("/-show/showfile/cue/{i:03}/scene")))
+                        .chain((0..100).map(|i| format!("/-show/showfile/cue/{i:03}/skip")))
+                        .chain((0..100).map(|i| format!("/-show/showfile/cue/{i:03}/miditype")))
+                        .chain((0..100).map(|i| format!("/-show/showfile/cue/{i:03}/midichan")))
+                        .chain((0..100).map(|i| format!("/-show/showfile/cue/{i:03}/midipara1")))
+                        .chain((0..100).map(|i| format!("/-show/showfile/cue/{i:03}/midipara2")))
+                        .collect();
+                    let mut snippet_paths: Vec<String> = (0..100)
+                        .map(|i| format!("/-show/showfile/snippet/{i:03}/name"))
+                        .chain((0..100).map(|i| format!("/-show/showfile/snippet/{i:03}/hasData")))
+                        .collect();
+                    scene_paths
+                        .drain(..)
+                        .chain(cue_paths.drain(..))
+                        .chain(snippet_paths.drain(..))
+                        .collect()
+                }
+                MixerModel::XR18 => {
+                    let mut snap_paths: Vec<String> = (1..=64)
+                        .map(|i| format!("/-snap/{i:02}/name"))
+                        .chain((1..=64).map(|i| format!("/-snap/{i:02}/hasdata")))
+                        .collect();
+                    snap_paths.push("/-snap/index".to_owned());
+                    snap_paths.push("/-snap/name".to_owned());
+                    snap_paths
+                }
+            };
             return Some(Task::batch(
                 all_paths
                     .chunks(75)
@@ -2525,30 +2772,60 @@ fn spawn_load_panel_parameters(app: &StatusApp, mixer_addr: SocketAddr) -> Optio
             ));
         }
         AppView::Routing => {
-            let mut paths: Vec<String> = (1..=16)
-                .map(|n| format!("/config/chlink/{n:02}"))
-                .chain((1..=4).map(|n| format!("/config/auxlink/{n:02}")))
-                .chain((1..=8).map(|n| format!("/config/buslink/{n:02}")))
-                .chain((1..=4).map(|n| format!("/config/fxlink/{n:02}")))
-                .chain((1..=3).map(|n| format!("/config/mtxlink/{n:02}")))
-                .collect();
-            paths.push("/config/linkcfg/hadly".to_owned());
-            paths.push("/config/linkcfg/eq".to_owned());
-            paths.push("/config/linkcfg/dyn".to_owned());
-            paths.push("/config/linkcfg/fdrmute".to_owned());
-            paths.extend((1..=32).map(|n| format!("/ch/{n:02}/config/source")));
-            paths.push("/config/routing/OUT/1-4".to_owned());
-            paths.push("/config/routing/OUT/5-8".to_owned());
-            paths.push("/config/routing/OUT/9-12".to_owned());
-            paths.push("/config/routing/OUT/13-16".to_owned());
-            for out in 1..=16 {
-                paths.push(format!("/outputs/main/{out:02}/delay/on"));
-                paths.push(format!("/outputs/main/{out:02}/delay/time"));
-                paths.push(format!("/outputs/main/{out:02}/src"));
-            }
-            for out in 1..=6 {
-                paths.push(format!("/outputs/aux/{out:02}/src"));
-            }
+            let paths: Vec<String> = match app.mixer_model {
+                MixerModel::X32 => {
+                    let mut p: Vec<String> = (1..=16)
+                        .map(|n| format!("/config/chlink/{n:02}"))
+                        .chain((1..=4).map(|n| format!("/config/auxlink/{n:02}")))
+                        .chain((1..=8).map(|n| format!("/config/buslink/{n:02}")))
+                        .chain((1..=4).map(|n| format!("/config/fxlink/{n:02}")))
+                        .chain((1..=3).map(|n| format!("/config/mtxlink/{n:02}")))
+                        .collect();
+                    p.push("/config/linkcfg/hadly".to_owned());
+                    p.push("/config/linkcfg/eq".to_owned());
+                    p.push("/config/linkcfg/dyn".to_owned());
+                    p.push("/config/linkcfg/fdrmute".to_owned());
+                    p.extend((1..=32).map(|n| format!("/ch/{n:02}/config/source")));
+                    p.push("/config/routing/OUT/1-4".to_owned());
+                    p.push("/config/routing/OUT/5-8".to_owned());
+                    p.push("/config/routing/OUT/9-12".to_owned());
+                    p.push("/config/routing/OUT/13-16".to_owned());
+                    for out in 1..=16 {
+                        p.push(format!("/outputs/main/{out:02}/delay/on"));
+                        p.push(format!("/outputs/main/{out:02}/delay/time"));
+                        p.push(format!("/outputs/main/{out:02}/src"));
+                    }
+                    for out in 1..=6 {
+                        p.push(format!("/outputs/aux/{out:02}/src"));
+                    }
+                    p
+                }
+                MixerModel::XR18 => {
+                    let mut p: Vec<String> = (1..=8)
+                        .map(|n| format!("/config/chlink/{n:02}"))
+                        .chain((1..=3).map(|n| format!("/config/buslink/{n:02}")))
+                        .chain((1..=2).map(|n| format!("/config/fxlink/{n:02}")))
+                        .collect();
+                    p.push("/config/linkcfg/hadly".to_owned());
+                    p.push("/config/linkcfg/eq".to_owned());
+                    p.push("/config/linkcfg/dyn".to_owned());
+                    p.push("/config/linkcfg/fdrmute".to_owned());
+                    p.extend((1..=16).map(|n| format!("/ch/{n:02}/config/source")));
+                    p.push("/config/routing/OUT/1-4".to_owned());
+                    p.push("/config/routing/OUT/5-8".to_owned());
+                    p.push("/config/routing/OUT/9-12".to_owned());
+                    p.push("/config/routing/OUT/13-16".to_owned());
+                    for out in 1..=6 {
+                        p.push(format!("/outputs/main/{out:02}/delay/on"));
+                        p.push(format!("/outputs/main/{out:02}/delay/time"));
+                        p.push(format!("/outputs/main/{out:02}/src"));
+                    }
+                    for out in 1..=2 {
+                        p.push(format!("/outputs/aux/{out:02}/src"));
+                    }
+                    p
+                }
+            };
             return Some(Task::perform(
                 async move {
                     crate::ParameterProbe::new(mixer_addr)
@@ -2603,8 +2880,8 @@ fn spawn_discovery() -> Task<Message> {
     )
 }
 
-fn state_subscription(mixer_addr: SocketAddr) -> Subscription<Message> {
-    Subscription::run_with(mixer_addr, state_worker).map(Message::ConsoleUpdateReceived)
+fn state_subscription(mixer_addr: SocketAddr, model: MixerModel) -> Subscription<Message> {
+    Subscription::run_with((mixer_addr, model), state_worker).map(Message::ConsoleUpdateReceived)
 }
 
 fn mixer_addr_from_args_or_env() -> Option<SocketAddr> {
@@ -2616,9 +2893,10 @@ fn mixer_addr_from_args_or_env() -> Option<SocketAddr> {
 }
 
 fn mixer_strips(app: &StatusApp) -> Element<'_, Message> {
-    let strips = app.faders.iter().enumerate().fold(
+    let strips = app.visible_strips().iter().enumerate().fold(
         row!().spacing(0).align_y(iced::Alignment::End),
-        |strips, (index, value)| {
+        |strips, (index, target)| {
+            let value = app.faders[index];
             let gain_value = app.gain_drag_values[index]
                 .or(app.gains[index])
                 .unwrap_or(0.0);
@@ -2630,7 +2908,7 @@ fn mixer_strips(app: &StatusApp) -> Element<'_, Message> {
                 .map(format_fader_label)
                 .unwrap_or_else(|| "--".to_owned());
             let pan_label = format_pan_label(pan_value);
-            let target = VISIBLE_STRIPS[index];
+            let target = *target;
             let is_muted = app.muted[index].unwrap_or(false);
             let is_soloed = app.soloed[index].unwrap_or(false);
             let meter = container(
@@ -2645,7 +2923,8 @@ fn mixer_strips(app: &StatusApp) -> Element<'_, Message> {
             .height(Length::Fill)
             .align_y(iced::alignment::Vertical::Bottom);
             let sends: Element<'_, Message> = match target {
-                FaderTarget::Channel(_) | FaderTarget::Aux(_) | FaderTarget::FxRtn(_) => SEND_BUSES
+                FaderTarget::Channel(_) | FaderTarget::Aux(_) | FaderTarget::FxRtn(_) => app
+                    .send_buses()
                     .iter()
                     .enumerate()
                     .fold(
@@ -2665,7 +2944,8 @@ fn mixer_strips(app: &StatusApp) -> Element<'_, Message> {
                         },
                     )
                     .into(),
-                FaderTarget::Bus(_) | FaderTarget::Main => MATRIX_SENDS
+                FaderTarget::Bus(_) | FaderTarget::Main => app
+                    .matrix_sends()
                     .iter()
                     .enumerate()
                     .fold(
@@ -3224,12 +3504,13 @@ fn channel_detail_panel(app: &StatusApp) -> Element<'_, Message> {
         SelectedStrip::Strip(index) => index,
         SelectedStrip::Master => 0,
     };
-    let target = VISIBLE_STRIPS[index];
+    let target = app.visible_strips()[index];
     let pan_value = app.pans[index].unwrap_or(0.5);
-    let base = strip_base_path(target);
+    let base = strip_base_path(target, app.mixer_model);
 
     let sends: Element<'_, Message> = match target {
-        FaderTarget::Channel(_) | FaderTarget::Aux(_) | FaderTarget::FxRtn(_) => SEND_BUSES
+        FaderTarget::Channel(_) | FaderTarget::Aux(_) | FaderTarget::FxRtn(_) => app
+            .send_buses()
             .iter()
             .enumerate()
             .fold(column!().spacing(4), |column, (bus_index, bus)| {
@@ -3237,7 +3518,8 @@ fn channel_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                 column.push(channel_send_row(index, bus_index, *bus, send_value))
             })
             .into(),
-        FaderTarget::Bus(_) | FaderTarget::Main => MATRIX_SENDS
+        FaderTarget::Bus(_) | FaderTarget::Main => app
+            .matrix_sends()
             .iter()
             .enumerate()
             .fold(column!().spacing(4), |column, (bus_index, bus)| {
@@ -3359,7 +3641,8 @@ fn dca_group_chips<'a>(app: &'a StatusApp, base: &str) -> Element<'a, Message> {
         Some(OscValue::Int(v)) => *v,
         _ => 0,
     };
-    let chips: Element<'_, Message> = (1..=8)
+    let dca_count = app.config().dca_count;
+    let chips: Element<'_, Message> = (1..=dca_count)
         .fold(row!().spacing(3), |row, dca| {
             let active = (dca_val & (1 << (dca - 1))) != 0;
             let bit = 1 << (dca - 1);
@@ -3417,7 +3700,8 @@ fn mute_group_chips<'a>(app: &'a StatusApp, base: &str) -> Element<'a, Message> 
         Some(OscValue::Int(v)) => *v,
         _ => 0,
     };
-    let chips: Element<'_, Message> = (1..=6)
+    let mute_count = app.config().mute_group_count;
+    let chips: Element<'_, Message> = (1..=mute_count)
         .fold(row!().spacing(3), |row, grp| {
             let active = (mute_val & (1 << (grp - 1))) != 0;
             let bit = 1 << (grp - 1);
@@ -3474,11 +3758,16 @@ fn config_detail_panel(app: &StatusApp) -> Element<'_, Message> {
     let index = match selected {
         SelectedStrip::Strip(index) => index,
         SelectedStrip::Master => {
-            return config_detail_panel_for_base(app, "/main/st".to_owned(), FaderTarget::Main, 0);
+            return config_detail_panel_for_base(
+                app,
+                main_base_path(app.mixer_model),
+                FaderTarget::Main,
+                0,
+            );
         }
     };
-    let target = VISIBLE_STRIPS[index];
-    let base = strip_base_path(target);
+    let target = app.visible_strips()[index];
+    let base = strip_base_path(target, app.mixer_model);
     config_detail_panel_for_base(app, base, target, index)
 }
 
@@ -3509,12 +3798,24 @@ fn config_detail_panel_for_base<'a>(
             ));
             if matches!(target, FaderTarget::Channel(_)) {
                 if let GainSource::Headamp(idx) = app.gain_sources[strip_index] {
-                    let gain_path = format!("/headamp/{idx:03}/gain");
-                    let gain = param_float(app, &gain_path);
-                    preamp_col =
-                        preamp_col.push(param_slider_labeled("Gain", gain_path, gain, |v| {
-                            format_db1(linf_value(v, -12.0, 60.0))
-                        }));
+                    let gain = if app.mixer_model == MixerModel::X32 {
+                        let gain_path = format!("/headamp/{idx:03}/gain");
+                        let gain = param_float(app, &gain_path);
+                        preamp_col =
+                            preamp_col.push(param_slider_labeled("Gain", gain_path, gain, |v| {
+                                format_db1(linf_value(v, -12.0, 60.0))
+                            }));
+                        gain
+                    } else {
+                        let gain_path = format!("/headamp/{idx:02}/gain");
+                        let gain = param_float(app, &gain_path);
+                        preamp_col =
+                            preamp_col.push(param_slider_labeled("Gain", gain_path, gain, |v| {
+                                format_db1(linf_value(v, -12.0, 20.0))
+                            }));
+                        gain
+                    };
+                    let _ = gain;
                 }
                 let hpon = param_bool(app, &format!("{base}/preamp/hpon"));
                 let hpf = param_float(app, &format!("{base}/preamp/hpf"));
@@ -3593,8 +3894,8 @@ fn config_detail_panel_for_base<'a>(
         panels = panels.push(detail_panel(title, insert_col));
     }
 
-    // Main Mono insert
-    if target == FaderTarget::Main {
+    // Main Mono insert (X32 only)
+    if app.mixer_model == MixerModel::X32 && target == FaderTarget::Main {
         let insert_on = param_bool(app, "/main/m/insert/on");
         let insert_pos = param_bool(app, "/main/m/insert/pos");
         let insert_sel = match app.parameter_values.get("/main/m/insert/sel") {
@@ -3616,7 +3917,11 @@ fn config_detail_panel_for_base<'a>(
             GainSource::Headamp(idx) => idx,
             _ => ch - 1,
         };
-        let phantom_path = format!("/headamp/{headamp_index:03}/phantom");
+        let phantom_path = if app.mixer_model == MixerModel::X32 {
+            format!("/headamp/{headamp_index:03}/phantom")
+        } else {
+            format!("/headamp/{headamp_index:02}/phantom")
+        };
         let phantom_on = param_bool(app, &phantom_path);
         panels = panels.push(detail_panel(
             "Phantom",
@@ -3750,13 +4055,13 @@ fn gate_detail_panel(app: &StatusApp) -> Element<'_, Message> {
             return top_panel_shell(row![text("Main stereo has no noise gate").size(14)]);
         }
     };
-    let target = VISIBLE_STRIPS[index];
+    let target = app.visible_strips()[index];
 
     if !matches!(target, FaderTarget::Channel(_)) {
         return top_panel_shell(row![text("No noise gate for this strip").size(14)]);
     }
 
-    let base = strip_base_path(target);
+    let base = strip_base_path(target, app.mixer_model);
 
     let on = param_bool(app, &format!("{base}/gate/on"));
     let thr = param_float(app, &format!("{base}/gate/thr"));
@@ -3858,10 +4163,10 @@ fn dyn_detail_panel(app: &StatusApp) -> Element<'_, Message> {
     let index = match selected {
         SelectedStrip::Strip(index) => index,
         SelectedStrip::Master => {
-            return dyn_detail_panel_for_base(app, "/main/st".to_owned());
+            return dyn_detail_panel_for_base(app, main_base_path(app.mixer_model));
         }
     };
-    let target = VISIBLE_STRIPS[index];
+    let target = app.visible_strips()[index];
 
     if matches!(
         target,
@@ -3870,7 +4175,7 @@ fn dyn_detail_panel(app: &StatusApp) -> Element<'_, Message> {
         return top_panel_shell(row![text("No dynamics for this strip").size(14)]);
     }
 
-    let base = strip_base_path(target);
+    let base = strip_base_path(target, app.mixer_model);
     dyn_detail_panel_for_base(app, base)
 }
 
@@ -4035,11 +4340,11 @@ fn eq_detail_panel(app: &StatusApp) -> Element<'_, Message> {
     let index = match selected {
         SelectedStrip::Strip(index) => index,
         SelectedStrip::Master => {
-            return eq_detail_panel_for_base(app, "/main/st".to_owned(), 6);
+            return eq_detail_panel_for_base(app, main_base_path(app.mixer_model), 6);
         }
     };
-    let target = VISIBLE_STRIPS[index];
-    let base = strip_base_path(target);
+    let target = app.visible_strips()[index];
+    let base = strip_base_path(target, app.mixer_model);
     let bands = eq_band_count(target);
 
     if bands == 0 {
@@ -4105,18 +4410,32 @@ fn sends_detail_panel(app: &StatusApp) -> Element<'_, Message> {
         SelectedStrip::Strip(index) => index,
         SelectedStrip::Master => return top_panel_shell(row![text("Main sends").size(14)]),
     };
-    let target = VISIBLE_STRIPS[index];
-    let base = strip_base_path(target);
+    let target = app.visible_strips()[index];
+    let base = strip_base_path(target, app.mixer_model);
 
     let (sends, has_tap_types, has_main_lr, has_main_mono): (Vec<u8>, bool, bool, bool) =
         match target {
             FaderTarget::Channel(_) | FaderTarget::Aux(_) | FaderTarget::FxRtn(_) => {
-                ((1..=16).collect(), true, true, true)
+                let count = if app.mixer_model == MixerModel::X32 {
+                    16
+                } else {
+                    6
+                };
+                let has_mono = app.mixer_model == MixerModel::X32;
+                ((1..=count).collect(), true, true, has_mono)
             }
-            FaderTarget::Bus(_) => ((1..=6).collect(), false, true, true),
+            FaderTarget::Bus(_) => {
+                let count = if app.mixer_model == MixerModel::X32 {
+                    6
+                } else {
+                    0
+                };
+                let has_mono = app.mixer_model == MixerModel::X32;
+                ((1..=count).collect(), false, true, has_mono)
+            }
             FaderTarget::Mtx(_) => (Vec::new(), false, true, false),
             FaderTarget::Dca(_) => (Vec::new(), false, true, false),
-            FaderTarget::Main => (Vec::new(), false, true, true),
+            FaderTarget::Main => (Vec::new(), false, true, false),
         };
 
     if sends.is_empty() && !has_main_lr {
@@ -4151,9 +4470,19 @@ fn sends_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                         }
                         _ => {
                             let st = if is_odd {
-                                param_bool(app, &format!("/bus/{send:02}/mix/st"))
+                                let st_path = if app.mixer_model == MixerModel::X32 {
+                                    format!("/bus/{send:02}/mix/st")
+                                } else {
+                                    format!("/bus/{send}/mix/st")
+                                };
+                                param_bool(app, &st_path)
                             } else {
-                                param_bool(app, &format!("/bus/{:02}/mix/st", send - 1))
+                                let st_path = if app.mixer_model == MixerModel::X32 {
+                                    format!("/bus/{:02}/mix/st", send - 1)
+                                } else {
+                                    format!("/bus/{}/mix/st", send - 1)
+                                };
+                                param_bool(app, &st_path)
                             };
                             (format!("Bus {send}"), st)
                         }
@@ -4194,7 +4523,12 @@ fn sends_detail_panel(app: &StatusApp) -> Element<'_, Message> {
 
     // Tap-point selectors for bus pairs
     if has_tap_types {
-        let tap_rows: Element<'_, Message> = (1..=16)
+        let tap_count = if app.mixer_model == MixerModel::X32 {
+            16
+        } else {
+            6
+        };
+        let tap_rows: Element<'_, Message> = (1..=tap_count)
             .step_by(2)
             .fold(column!().spacing(4), |col, bus| {
                 let type_path = format!("{base}/mix/{bus:02}/type");
@@ -4249,24 +4583,27 @@ fn sends_detail_panel(app: &StatusApp) -> Element<'_, Message> {
             ));
         }
         if target == FaderTarget::Main {
-            let st_on = param_bool(app, "/main/st/mix/on");
-            let st_fader = param_float(app, "/main/st/mix/fader");
-            let st_pan = param_float(app, "/main/st/mix/pan");
-            main_col = main_col.push(param_toggle("ST On", "/main/st/mix/on".to_owned(), st_on));
+            let main_base = main_base_path(app.mixer_model);
+            let st_on = param_bool(app, &format!("{main_base}/mix/on"));
+            let st_fader = param_float(app, &format!("{main_base}/mix/fader"));
+            let st_pan = param_float(app, &format!("{main_base}/mix/pan"));
+            main_col = main_col.push(param_toggle("ST On", format!("{main_base}/mix/on"), st_on));
             main_col = main_col.push(param_slider_labeled(
                 "ST Fader",
-                "/main/st/mix/fader".to_owned(),
+                format!("{main_base}/mix/fader"),
                 st_fader,
                 format_fader_label,
             ));
             main_col = main_col.push(param_slider_labeled(
                 "ST Pan",
-                "/main/st/mix/pan".to_owned(),
+                format!("{main_base}/mix/pan"),
                 st_pan,
                 format_pan_label,
             ));
         }
-        if matches!(target, FaderTarget::Main | FaderTarget::Dca(_)) {
+        if app.mixer_model == MixerModel::X32
+            && matches!(target, FaderTarget::Main | FaderTarget::Dca(_))
+        {
             let m_on = param_bool(app, "/main/m/mix/on");
             let m_fader = param_float(app, "/main/m/mix/fader");
             main_col = main_col.push(param_toggle("M On", "/main/m/mix/on".to_owned(), m_on));
@@ -4318,52 +4655,51 @@ fn main_detail_panel(app: &StatusApp) -> Element<'_, Message> {
     let index = match selected {
         SelectedStrip::Strip(index) => index,
         SelectedStrip::Master => {
-            return top_panel_shell(row![
-                detail_panel(
-                    "Main Stereo",
-                    column![
-                        param_toggle(
-                            "On",
-                            "/main/st/mix/on".to_owned(),
-                            param_bool(app, "/main/st/mix/on")
-                        ),
-                        param_slider_labeled(
-                            "Fader",
-                            "/main/st/mix/fader".to_owned(),
-                            param_float(app, "/main/st/mix/fader"),
-                            format_fader_label
-                        ),
-                        param_slider_labeled(
-                            "Pan",
-                            "/main/st/mix/pan".to_owned(),
-                            param_float(app, "/main/st/mix/pan"),
-                            format_pan_label
-                        ),
-                    ]
-                    .spacing(8)
-                ),
-                detail_panel(
+            let base = main_base_path(app.mixer_model);
+            let st_on = param_bool(app, &format!("{base}/mix/on"));
+            let st_fader = param_float(app, &format!("{base}/mix/fader"));
+            let st_pan = param_float(app, &format!("{base}/mix/pan"));
+            let mut row = row![detail_panel(
+                "Main",
+                column![
+                    param_toggle("On", format!("{base}/mix/on"), st_on),
+                    param_slider_labeled(
+                        "Fader",
+                        format!("{base}/mix/fader"),
+                        st_fader,
+                        format_fader_label
+                    ),
+                    param_slider_labeled(
+                        "Pan",
+                        format!("{base}/mix/pan"),
+                        st_pan,
+                        format_pan_label
+                    ),
+                ]
+                .spacing(8)
+            ),];
+            if app.mixer_model == MixerModel::X32 {
+                let m_on = param_bool(app, "/main/m/mix/on");
+                let m_fader = param_float(app, "/main/m/mix/fader");
+                row = row.push(detail_panel(
                     "Main Mono",
                     column![
-                        param_toggle(
-                            "On",
-                            "/main/m/mix/on".to_owned(),
-                            param_bool(app, "/main/m/mix/on")
-                        ),
+                        param_toggle("On", "/main/m/mix/on".to_owned(), m_on),
                         param_slider_labeled(
                             "Fader",
                             "/main/m/mix/fader".to_owned(),
-                            param_float(app, "/main/m/mix/fader"),
+                            m_fader,
                             format_fader_label
                         ),
                     ]
-                    .spacing(8)
-                ),
-            ]);
+                    .spacing(8),
+                ));
+            }
+            return top_panel_shell(row);
         }
     };
-    let target = VISIBLE_STRIPS[index];
-    let base = strip_base_path(target);
+    let target = app.visible_strips()[index];
+    let base = strip_base_path(target, app.mixer_model);
 
     let mut panels = row!().spacing(8);
 
@@ -4766,7 +5102,12 @@ fn fx_param_names(fx_name: &str) -> [&'static str; 8] {
 
 fn fx_detail_panel(app: &StatusApp) -> Element<'_, Message> {
     let mut slots = row!().spacing(6);
-    for slot in 1..=8 {
+    let fx_slots = if app.mixer_model == MixerModel::X32 {
+        8
+    } else {
+        4
+    };
+    for slot in 1..=fx_slots {
         let base = format!("/fx/{slot:02}");
         let fx_type = match app.parameter_values.get(&format!("{base}/type")) {
             Some(OscValue::Int(t)) => fx_type_name(slot, *t),
@@ -4830,378 +5171,481 @@ fn fx_detail_panel(app: &StatusApp) -> Element<'_, Message> {
 }
 
 fn scenes_detail_panel(app: &StatusApp) -> Element<'_, Message> {
-    let scenes_grid: Element<'_, Message> = (1..=100)
-        .fold(column!().spacing(4), |mut col, scene| {
-            let name_path = format!("/-show/showfile/scene/{scene:03}/name");
-            let has_data_path = format!("/-show/showfile/scene/{scene:03}/hasData");
-            let name = match app.parameter_values.get(&name_path) {
-                Some(OscValue::String(s)) if !s.trim().is_empty() => s.clone(),
-                _ => format!("Scene {scene}"),
-            };
-            let has_data = param_bool(app, &has_data_path);
-            let name_color = if has_data {
-                Color::from_rgb8(0xC7, 0xC9, 0xD3)
-            } else {
-                Color::from_rgb8(0x60, 0x60, 0x60)
-            };
-
-            let safes_path = format!("/-show/showfile/scene/{scene:03}/safes");
-            let safes_val = param_int(app, &safes_path);
-            let has_safes = safes_val != 0;
-            let notes = match app
-                .parameter_values
-                .get(&format!("/-show/showfile/scene/{scene:03}/notes"))
-            {
-                Some(OscValue::String(s)) if !s.trim().is_empty() => s.clone(),
-                _ => String::new(),
-            };
-            let notes_short = if notes.len() > 20 {
-                format!("{}…", &notes[..20])
-            } else {
-                notes.clone()
-            };
-
-            let row = row![
-                text(format!("{scene:03}"))
-                    .size(11)
-                    .width(Length::Fixed(28.0))
-                    .color(Color::from_rgb8(0x8E, 0x94, 0x9D)),
-                text(name)
-                    .size(11)
-                    .width(Length::Fixed(100.0))
-                    .color(name_color),
-                text(notes_short)
-                    .size(9)
-                    .width(Length::Fixed(80.0))
-                    .color(Color::from_rgb8(0x6E, 0x74, 0x7D)),
-                button(text("Recall").size(10))
-                    .on_press(Message::SceneRecall(scene))
-                    .padding([2, 6])
-                    .style(|_theme: &Theme, _status: button::Status| button::Style {
-                        background: Some(Background::Color(Color::from_rgb8(0x2A, 0x5A, 0x3A))),
-                        text_color: Color::from_rgb8(0xC7, 0xC9, 0xD3),
-                        border: Border {
-                            color: Color::from_rgb8(0x4A, 0x8A, 0x5A),
-                            width: 1.0,
-                            radius: 2.0.into()
-                        },
-                        ..Default::default()
-                    }),
-                button(text("Save").size(10))
-                    .on_press(Message::SceneSave(scene))
-                    .padding([2, 6])
-                    .style(|_theme: &Theme, _status: button::Status| button::Style {
-                        background: Some(Background::Color(Color::from_rgb8(0x3A, 0x3A, 0x5A))),
-                        text_color: Color::from_rgb8(0xC7, 0xC9, 0xD3),
-                        border: Border {
-                            color: Color::from_rgb8(0x5A, 0x5A, 0x8A),
-                            width: 1.0,
-                            radius: 2.0.into()
-                        },
-                        ..Default::default()
-                    }),
-                button(text(if has_safes { "S!" } else { "S" }).size(10))
-                    .on_press(Message::EditSceneSafes(scene))
-                    .padding([2, 4])
-                    .style(
-                        move |_theme: &Theme, _status: button::Status| button::Style {
-                            background: if has_safes {
-                                Some(Background::Color(Color::from_rgb8(0x8A, 0x6A, 0x2A)))
-                            } else {
-                                Some(Background::Color(Color::from_rgb8(0x2A, 0x2A, 0x2C)))
-                            },
-                            text_color: Color::from_rgb8(0xC7, 0xC9, 0xD3),
-                            border: Border {
-                                color: if has_safes {
-                                    Color::from_rgb8(0xC0, 0xA0, 0x5A)
-                                } else {
-                                    Color::from_rgb8(0x4A, 0x4A, 0x4C)
-                                },
-                                width: 1.0,
-                                radius: 2.0.into()
-                            },
-                            ..Default::default()
-                        }
-                    ),
-            ]
-            .spacing(4)
-            .align_y(iced::Alignment::Center);
-            col = col.push(row);
-
-            if app.editing_scene_safes == Some(scene) {
-                let safe_labels = [
-                    (1, "TB"),
-                    (2, "FX"),
-                    (3, "Bus"),
-                    (4, "Ch"),
-                    (5, "Cfg"),
-                    (6, "Pre"),
-                    (7, "Out"),
-                    (8, "Rte"),
-                ];
-                let safe_row = safe_labels
-                    .iter()
-                    .fold(row!().spacing(2), |r, (bit, label)| {
-                        let active = (safes_val & (1 << bit)) != 0;
-                        let new_val = if active {
-                            safes_val & !(1 << bit)
-                        } else {
-                            safes_val | (1 << bit)
-                        };
-                        r.push(
-                            button(text(*label).size(9))
-                                .on_press(Message::ParameterChanged(
-                                    safes_path.clone(),
-                                    OscValue::Int(new_val),
-                                ))
-                                .padding([1, 4])
-                                .style(move |_theme: &Theme, _status: button::Status| {
-                                    button::Style {
-                                        background: if active {
-                                            Some(Background::Color(Color::from_rgb8(
-                                                0x8A, 0x6A, 0x2A,
-                                            )))
-                                        } else {
-                                            Some(Background::Color(Color::from_rgb8(
-                                                0x2A, 0x2A, 0x2C,
-                                            )))
-                                        },
-                                        text_color: if active {
-                                            Color::WHITE
-                                        } else {
-                                            Color::from_rgb8(0x8E, 0x94, 0x9D)
-                                        },
-                                        border: Border {
-                                            color: if active {
-                                                Color::from_rgb8(0xC0, 0xA0, 0x5A)
-                                            } else {
-                                                Color::from_rgb8(0x4A, 0x4A, 0x4C)
-                                            },
-                                            width: 1.0,
-                                            radius: 2.0.into(),
-                                        },
-                                        ..Default::default()
-                                    }
-                                }),
-                        )
-                    });
-                col = col.push(safe_row);
-            }
-            col
-        })
-        .into();
-
-    // Cues section
-    let cues_grid: Element<'_, Message> = (0..100)
-        .fold(column!().spacing(4), |col, cue| {
-            let name_path = format!("/-show/showfile/cue/{cue:03}/name");
-            let scene_path = format!("/-show/showfile/cue/{cue:03}/scene");
-            let skip_path = format!("/-show/showfile/cue/{cue:03}/skip");
-            let name = match app.parameter_values.get(&name_path) {
-                Some(OscValue::String(s)) if !s.trim().is_empty() => s.clone(),
-                _ => return col,
-            };
-            let scene_idx = match app.parameter_values.get(&scene_path) {
-                Some(OscValue::Int(v)) => *v,
-                _ => -1,
-            };
-            let skipped = param_bool(app, &skip_path);
-            let scene_label = if scene_idx >= 0 {
-                format!("→ Sc {scene_idx:03}")
-            } else {
-                "—".to_owned()
-            };
-            let name_color = if skipped {
-                Color::from_rgb8(0x60, 0x60, 0x60)
-            } else {
-                Color::from_rgb8(0xC7, 0xC9, 0xD3)
-            };
-
-            let midi_type = match app
-                .parameter_values
-                .get(&format!("/-show/showfile/cue/{cue:03}/miditype"))
-            {
+    match app.mixer_model {
+        MixerModel::XR18 => {
+            let current_index = match app.parameter_values.get("/-snap/index") {
                 Some(OscValue::Int(v)) => *v,
                 _ => 0,
             };
-            let midi_label = if midi_type > 0 {
-                let midi_type_name = match midi_type {
-                    1 => "PC",
-                    2 => "CC",
-                    3 => "Note",
-                    _ => "?",
-                };
-                let midi_chan = match app
-                    .parameter_values
-                    .get(&format!("/-show/showfile/cue/{cue:03}/midichan"))
-                {
-                    Some(OscValue::Int(v)) => *v + 1,
-                    _ => 0,
-                };
-                let midi_para1 = match app
-                    .parameter_values
-                    .get(&format!("/-show/showfile/cue/{cue:03}/midipara1"))
-                {
-                    Some(OscValue::Int(v)) => *v,
-                    _ => 0,
-                };
-                format!("{midi_type_name} Ch{midi_chan} P{midi_para1}")
-            } else {
-                String::new()
+            let current_name = match app.parameter_values.get("/-snap/name") {
+                Some(OscValue::String(s)) => s.clone(),
+                _ => String::new(),
             };
-
-            let row = row![
-                text(format!("{cue:03}"))
-                    .size(11)
-                    .width(Length::Fixed(28.0))
-                    .color(Color::from_rgb8(0x8E, 0x94, 0x9D)),
-                text(name)
-                    .size(11)
-                    .width(Length::Fixed(110.0))
-                    .color(name_color),
-                text(scene_label)
-                    .size(10)
-                    .width(Length::Fixed(44.0))
-                    .color(Color::from_rgb8(0xA9, 0xAC, 0xB3)),
-                text(midi_label)
-                    .size(9)
-                    .width(Length::Fixed(70.0))
-                    .color(Color::from_rgb8(0x8E, 0x94, 0x9D)),
-                button(text("Go").size(10))
-                    .on_press(Message::SceneRecall(cue))
-                    .padding([2, 6])
-                    .style(|_theme: &Theme, _status: button::Status| button::Style {
-                        background: Some(Background::Color(Color::from_rgb8(0x2A, 0x5A, 0x3A))),
-                        text_color: Color::from_rgb8(0xC7, 0xC9, 0xD3),
-                        border: Border {
-                            color: Color::from_rgb8(0x4A, 0x8A, 0x5A),
-                            width: 1.0,
-                            radius: 2.0.into()
-                        },
-                        ..Default::default()
-                    }),
+            let header = row![
+                text(format!("Current: {current_name} (#{current_index})"))
+                    .size(12)
+                    .color(Color::from_rgb8(0xC7, 0xC9, 0xD3)),
             ]
-            .spacing(4)
-            .align_y(iced::Alignment::Center);
-            col.push(row)
-        })
-        .into();
-
-    // Snippets section
-    let snippets_grid: Element<'_, Message> = (0..100)
-        .fold(column!().spacing(4), |col, snip| {
-            let name_path = format!("/-show/showfile/snippet/{snip:03}/name");
-            let has_data_path = format!("/-show/showfile/snippet/{snip:03}/hasData");
-            let name = match app.parameter_values.get(&name_path) {
-                Some(OscValue::String(s)) if !s.trim().is_empty() => s.clone(),
-                _ => return col,
-            };
-            let has_data = param_bool(app, &has_data_path);
-            let name_color = if has_data {
-                Color::from_rgb8(0xC7, 0xC9, 0xD3)
-            } else {
-                Color::from_rgb8(0x60, 0x60, 0x60)
-            };
-
-            let editing = app.editing_snippet_filters == Some(snip);
-            let row = row![
-                text(format!("{snip:03}"))
-                    .size(11)
-                    .width(Length::Fixed(28.0))
-                    .color(Color::from_rgb8(0x8E, 0x94, 0x9D)),
-                text(name)
-                    .size(11)
-                    .width(Length::Fixed(110.0))
-                    .color(name_color),
-                button(text("Recall").size(10))
-                    .on_press(Message::SnippetRecall(snip))
-                    .padding([2, 5])
-                    .style(|_theme: &Theme, _status: button::Status| button::Style {
-                        background: Some(Background::Color(Color::from_rgb8(0x2A, 0x5A, 0x3A))),
-                        text_color: Color::from_rgb8(0xC7, 0xC9, 0xD3),
-                        border: Border {
-                            color: Color::from_rgb8(0x4A, 0x8A, 0x5A),
-                            width: 1.0,
-                            radius: 2.0.into()
-                        },
-                        ..Default::default()
-                    }),
-                button(text("Save").size(10))
-                    .on_press(Message::SnippetSave(snip))
-                    .padding([2, 5])
-                    .style(|_theme: &Theme, _status: button::Status| button::Style {
-                        background: Some(Background::Color(Color::from_rgb8(0x3A, 0x3A, 0x5A))),
-                        text_color: Color::from_rgb8(0xC7, 0xC9, 0xD3),
-                        border: Border {
-                            color: Color::from_rgb8(0x5A, 0x5A, 0x8A),
-                            width: 1.0,
-                            radius: 2.0.into()
-                        },
-                        ..Default::default()
-                    }),
-                button(text("Filt").size(10))
-                    .on_press(Message::EditSnippetFilters(snip))
-                    .padding([2, 5])
-                    .style(
-                        move |_theme: &Theme, _status: button::Status| button::Style {
-                            background: if editing {
-                                Some(Background::Color(Color::from_rgb8(0x8A, 0x6A, 0x2A)))
-                            } else {
-                                Some(Background::Color(Color::from_rgb8(0x2A, 0x2A, 0x2C)))
-                            },
-                            text_color: Color::from_rgb8(0xC7, 0xC9, 0xD3),
-                            border: Border {
-                                color: if editing {
-                                    Color::from_rgb8(0xC0, 0xA0, 0x5A)
-                                } else {
-                                    Color::from_rgb8(0x4A, 0x4A, 0x4C)
+            .spacing(8);
+            let snaps_grid: Element<'_, Message> = (1..=64)
+                .fold(column!().spacing(4), |mut col, snap| {
+                    let name_path = format!("/-snap/{snap:02}/name");
+                    let has_data_path = format!("/-snap/{snap:02}/hasdata");
+                    let name = match app.parameter_values.get(&name_path) {
+                        Some(OscValue::String(s)) if !s.trim().is_empty() => s.clone(),
+                        _ => format!("Snapshot {snap}"),
+                    };
+                    let has_data = param_bool(app, &has_data_path);
+                    let name_color = if has_data {
+                        Color::from_rgb8(0xC7, 0xC9, 0xD3)
+                    } else {
+                        Color::from_rgb8(0x60, 0x60, 0x60)
+                    };
+                    let is_current = snap == current_index as usize;
+                    let num_color = if is_current {
+                        Color::from_rgb8(0x29, 0xE6, 0xF2)
+                    } else {
+                        Color::from_rgb8(0x8E, 0x94, 0x9D)
+                    };
+                    let row = row![
+                        text(format!("{snap:02}"))
+                            .size(11)
+                            .width(Length::Fixed(28.0))
+                            .color(num_color),
+                        text(name)
+                            .size(11)
+                            .width(Length::Fixed(140.0))
+                            .color(name_color),
+                        button(text("Recall").size(10))
+                            .on_press(Message::SceneRecall(snap as i32))
+                            .padding([2, 6])
+                            .style(|_theme: &Theme, _status: button::Status| button::Style {
+                                background: Some(Background::Color(Color::from_rgb8(
+                                    0x2A, 0x5A, 0x3A
+                                ))),
+                                text_color: Color::from_rgb8(0xC7, 0xC9, 0xD3),
+                                border: Border {
+                                    color: Color::from_rgb8(0x4A, 0x8A, 0x5A),
+                                    width: 1.0,
+                                    radius: 2.0.into()
                                 },
-                                width: 1.0,
-                                radius: 2.0.into()
-                            },
-                            ..Default::default()
-                        }
-                    ),
-            ]
-            .spacing(4)
-            .align_y(iced::Alignment::Center);
-            let mut col = col.push(row);
+                                ..Default::default()
+                            }),
+                        button(text("Save").size(10))
+                            .on_press(Message::SceneSave(snap as i32))
+                            .padding([2, 6])
+                            .style(|_theme: &Theme, _status: button::Status| button::Style {
+                                background: Some(Background::Color(Color::from_rgb8(
+                                    0x3A, 0x3A, 0x5A
+                                ))),
+                                text_color: Color::from_rgb8(0xC7, 0xC9, 0xD3),
+                                border: Border {
+                                    color: Color::from_rgb8(0x5A, 0x5A, 0x8A),
+                                    width: 1.0,
+                                    radius: 2.0.into()
+                                },
+                                ..Default::default()
+                            }),
+                    ]
+                    .spacing(4)
+                    .align_y(iced::Alignment::Center);
+                    col = col.push(row);
+                    col
+                })
+                .into();
+            top_panel_shell(
+                scrollable(column![header, snaps_grid].spacing(8))
+                    .direction(scrollable::Direction::Vertical(scrollable::Scrollbar::new())),
+            )
+        }
+        MixerModel::X32 => {
+            let scenes_grid: Element<'_, Message> = (1..=100)
+                .fold(column!().spacing(4), |mut col, scene| {
+                    let name_path = format!("/-show/showfile/scene/{scene:03}/name");
+                    let has_data_path = format!("/-show/showfile/scene/{scene:03}/hasData");
+                    let name = match app.parameter_values.get(&name_path) {
+                        Some(OscValue::String(s)) if !s.trim().is_empty() => s.clone(),
+                        _ => format!("Scene {scene}"),
+                    };
+                    let has_data = param_bool(app, &has_data_path);
+                    let name_color = if has_data {
+                        Color::from_rgb8(0xC7, 0xC9, 0xD3)
+                    } else {
+                        Color::from_rgb8(0x60, 0x60, 0x60)
+                    };
 
-            if editing {
-                let eventtyp_path = format!("/-show/showfile/snippet/{snip:03}/eventtyp");
-                let eventtyp_val = match app.parameter_values.get(&eventtyp_path) {
-                    Some(OscValue::Int(v)) => *v as u32,
-                    _ => 0,
-                };
-                let channels_path = format!("/-show/showfile/snippet/{snip:03}/channels");
-                let channels_val = match app.parameter_values.get(&channels_path) {
-                    Some(OscValue::Int(v)) => *v as u32,
-                    _ => 0,
-                };
-                let auxbuses_path = format!("/-show/showfile/snippet/{snip:03}/auxbuses");
-                let auxbuses_val = match app.parameter_values.get(&auxbuses_path) {
-                    Some(OscValue::Int(v)) => *v as u32,
-                    _ => 0,
-                };
-                let maingrps_path = format!("/-show/showfile/snippet/{snip:03}/maingrps");
-                let maingrps_val = match app.parameter_values.get(&maingrps_path) {
-                    Some(OscValue::Int(v)) => *v as u32,
-                    _ => 0,
-                };
+                    let safes_path = format!("/-show/showfile/scene/{scene:03}/safes");
+                    let safes_val = param_int(app, &safes_path);
+                    let has_safes = safes_val != 0;
+                    let notes = match app
+                        .parameter_values
+                        .get(&format!("/-show/showfile/scene/{scene:03}/notes"))
+                    {
+                        Some(OscValue::String(s)) if !s.trim().is_empty() => s.clone(),
+                        _ => String::new(),
+                    };
+                    let notes_short = if notes.len() > 20 {
+                        format!("{}…", &notes[..20])
+                    } else {
+                        notes.clone()
+                    };
 
-                let make_bit_toggles = |label: &'static str,
-                                        path: String,
-                                        value: u32,
-                                        groups: &'static [(u32, &'static str)]|
-                 -> Element<'_, Message> {
-                    let toggles = groups.iter().fold(row!().spacing(2), |r, (mask, name)| {
-                        let active = (value & mask) != 0;
-                        let new_val = if (value & mask) == *mask {
-                            (value & !mask) as i32
-                        } else {
-                            (value | mask) as i32
+                    let row = row![
+                        text(format!("{scene:03}"))
+                            .size(11)
+                            .width(Length::Fixed(28.0))
+                            .color(Color::from_rgb8(0x8E, 0x94, 0x9D)),
+                        text(name)
+                            .size(11)
+                            .width(Length::Fixed(100.0))
+                            .color(name_color),
+                        text(notes_short)
+                            .size(9)
+                            .width(Length::Fixed(80.0))
+                            .color(Color::from_rgb8(0x6E, 0x74, 0x7D)),
+                        button(text("Recall").size(10))
+                            .on_press(Message::SceneRecall(scene))
+                            .padding([2, 6])
+                            .style(|_theme: &Theme, _status: button::Status| button::Style {
+                                background: Some(Background::Color(Color::from_rgb8(
+                                    0x2A, 0x5A, 0x3A
+                                ))),
+                                text_color: Color::from_rgb8(0xC7, 0xC9, 0xD3),
+                                border: Border {
+                                    color: Color::from_rgb8(0x4A, 0x8A, 0x5A),
+                                    width: 1.0,
+                                    radius: 2.0.into()
+                                },
+                                ..Default::default()
+                            }),
+                        button(text("Save").size(10))
+                            .on_press(Message::SceneSave(scene))
+                            .padding([2, 6])
+                            .style(|_theme: &Theme, _status: button::Status| button::Style {
+                                background: Some(Background::Color(Color::from_rgb8(
+                                    0x3A, 0x3A, 0x5A
+                                ))),
+                                text_color: Color::from_rgb8(0xC7, 0xC9, 0xD3),
+                                border: Border {
+                                    color: Color::from_rgb8(0x5A, 0x5A, 0x8A),
+                                    width: 1.0,
+                                    radius: 2.0.into()
+                                },
+                                ..Default::default()
+                            }),
+                        button(text(if has_safes { "S!" } else { "S" }).size(10))
+                            .on_press(Message::EditSceneSafes(scene))
+                            .padding([2, 4])
+                            .style(
+                                move |_theme: &Theme, _status: button::Status| button::Style {
+                                    background: if has_safes {
+                                        Some(Background::Color(Color::from_rgb8(0x8A, 0x6A, 0x2A)))
+                                    } else {
+                                        Some(Background::Color(Color::from_rgb8(0x2A, 0x2A, 0x2C)))
+                                    },
+                                    text_color: Color::from_rgb8(0xC7, 0xC9, 0xD3),
+                                    border: Border {
+                                        color: if has_safes {
+                                            Color::from_rgb8(0xC0, 0xA0, 0x5A)
+                                        } else {
+                                            Color::from_rgb8(0x4A, 0x4A, 0x4C)
+                                        },
+                                        width: 1.0,
+                                        radius: 2.0.into()
+                                    },
+                                    ..Default::default()
+                                }
+                            ),
+                    ]
+                    .spacing(4)
+                    .align_y(iced::Alignment::Center);
+                    col = col.push(row);
+
+                    if app.editing_scene_safes == Some(scene) {
+                        let safe_labels = [
+                            (1, "TB"),
+                            (2, "FX"),
+                            (3, "Bus"),
+                            (4, "Ch"),
+                            (5, "Cfg"),
+                            (6, "Pre"),
+                            (7, "Out"),
+                            (8, "Rte"),
+                        ];
+                        let safe_row =
+                            safe_labels
+                                .iter()
+                                .fold(row!().spacing(2), |r, (bit, label)| {
+                                    let active = (safes_val & (1 << bit)) != 0;
+                                    let new_val = if active {
+                                        safes_val & !(1 << bit)
+                                    } else {
+                                        safes_val | (1 << bit)
+                                    };
+                                    r.push(
+                                        button(text(*label).size(9))
+                                            .on_press(Message::ParameterChanged(
+                                                safes_path.clone(),
+                                                OscValue::Int(new_val),
+                                            ))
+                                            .padding([1, 4])
+                                            .style(
+                                                move |_theme: &Theme, _status: button::Status| {
+                                                    button::Style {
+                                                        background: if active {
+                                                            Some(Background::Color(
+                                                                Color::from_rgb8(0x8A, 0x6A, 0x2A),
+                                                            ))
+                                                        } else {
+                                                            Some(Background::Color(
+                                                                Color::from_rgb8(0x2A, 0x2A, 0x2C),
+                                                            ))
+                                                        },
+                                                        text_color: if active {
+                                                            Color::WHITE
+                                                        } else {
+                                                            Color::from_rgb8(0x8E, 0x94, 0x9D)
+                                                        },
+                                                        border: Border {
+                                                            color: if active {
+                                                                Color::from_rgb8(0xC0, 0xA0, 0x5A)
+                                                            } else {
+                                                                Color::from_rgb8(0x4A, 0x4A, 0x4C)
+                                                            },
+                                                            width: 1.0,
+                                                            radius: 2.0.into(),
+                                                        },
+                                                        ..Default::default()
+                                                    }
+                                                },
+                                            ),
+                                    )
+                                });
+                        col = col.push(safe_row);
+                    }
+                    col
+                })
+                .into();
+
+            // Cues section
+            let cues_grid: Element<'_, Message> = (0..100)
+                .fold(column!().spacing(4), |col, cue| {
+                    let name_path = format!("/-show/showfile/cue/{cue:03}/name");
+                    let scene_path = format!("/-show/showfile/cue/{cue:03}/scene");
+                    let skip_path = format!("/-show/showfile/cue/{cue:03}/skip");
+                    let name = match app.parameter_values.get(&name_path) {
+                        Some(OscValue::String(s)) if !s.trim().is_empty() => s.clone(),
+                        _ => return col,
+                    };
+                    let scene_idx = match app.parameter_values.get(&scene_path) {
+                        Some(OscValue::Int(v)) => *v,
+                        _ => -1,
+                    };
+                    let skipped = param_bool(app, &skip_path);
+                    let scene_label = if scene_idx >= 0 {
+                        format!("→ Sc {scene_idx:03}")
+                    } else {
+                        "—".to_owned()
+                    };
+                    let name_color = if skipped {
+                        Color::from_rgb8(0x60, 0x60, 0x60)
+                    } else {
+                        Color::from_rgb8(0xC7, 0xC9, 0xD3)
+                    };
+
+                    let midi_type = match app
+                        .parameter_values
+                        .get(&format!("/-show/showfile/cue/{cue:03}/miditype"))
+                    {
+                        Some(OscValue::Int(v)) => *v,
+                        _ => 0,
+                    };
+                    let midi_label = if midi_type > 0 {
+                        let midi_type_name = match midi_type {
+                            1 => "PC",
+                            2 => "CC",
+                            3 => "Note",
+                            _ => "?",
                         };
-                        r.push(
+                        let midi_chan = match app
+                            .parameter_values
+                            .get(&format!("/-show/showfile/cue/{cue:03}/midichan"))
+                        {
+                            Some(OscValue::Int(v)) => *v + 1,
+                            _ => 0,
+                        };
+                        let midi_para1 = match app
+                            .parameter_values
+                            .get(&format!("/-show/showfile/cue/{cue:03}/midipara1"))
+                        {
+                            Some(OscValue::Int(v)) => *v,
+                            _ => 0,
+                        };
+                        format!("{midi_type_name} Ch{midi_chan} P{midi_para1}")
+                    } else {
+                        String::new()
+                    };
+
+                    let row = row![
+                        text(format!("{cue:03}"))
+                            .size(11)
+                            .width(Length::Fixed(28.0))
+                            .color(Color::from_rgb8(0x8E, 0x94, 0x9D)),
+                        text(name)
+                            .size(11)
+                            .width(Length::Fixed(110.0))
+                            .color(name_color),
+                        text(scene_label)
+                            .size(10)
+                            .width(Length::Fixed(44.0))
+                            .color(Color::from_rgb8(0xA9, 0xAC, 0xB3)),
+                        text(midi_label)
+                            .size(9)
+                            .width(Length::Fixed(70.0))
+                            .color(Color::from_rgb8(0x8E, 0x94, 0x9D)),
+                        button(text("Go").size(10))
+                            .on_press(Message::SceneRecall(cue))
+                            .padding([2, 6])
+                            .style(|_theme: &Theme, _status: button::Status| button::Style {
+                                background: Some(Background::Color(Color::from_rgb8(
+                                    0x2A, 0x5A, 0x3A
+                                ))),
+                                text_color: Color::from_rgb8(0xC7, 0xC9, 0xD3),
+                                border: Border {
+                                    color: Color::from_rgb8(0x4A, 0x8A, 0x5A),
+                                    width: 1.0,
+                                    radius: 2.0.into()
+                                },
+                                ..Default::default()
+                            }),
+                    ]
+                    .spacing(4)
+                    .align_y(iced::Alignment::Center);
+                    col.push(row)
+                })
+                .into();
+
+            // Snippets section
+            let snippets_grid: Element<'_, Message> = (0..100)
+                .fold(column!().spacing(4), |col, snip| {
+                    let name_path = format!("/-show/showfile/snippet/{snip:03}/name");
+                    let has_data_path = format!("/-show/showfile/snippet/{snip:03}/hasData");
+                    let name = match app.parameter_values.get(&name_path) {
+                        Some(OscValue::String(s)) if !s.trim().is_empty() => s.clone(),
+                        _ => return col,
+                    };
+                    let has_data = param_bool(app, &has_data_path);
+                    let name_color = if has_data {
+                        Color::from_rgb8(0xC7, 0xC9, 0xD3)
+                    } else {
+                        Color::from_rgb8(0x60, 0x60, 0x60)
+                    };
+
+                    let editing = app.editing_snippet_filters == Some(snip);
+                    let row = row![
+                        text(format!("{snip:03}"))
+                            .size(11)
+                            .width(Length::Fixed(28.0))
+                            .color(Color::from_rgb8(0x8E, 0x94, 0x9D)),
+                        text(name)
+                            .size(11)
+                            .width(Length::Fixed(110.0))
+                            .color(name_color),
+                        button(text("Recall").size(10))
+                            .on_press(Message::SnippetRecall(snip))
+                            .padding([2, 5])
+                            .style(|_theme: &Theme, _status: button::Status| button::Style {
+                                background: Some(Background::Color(Color::from_rgb8(
+                                    0x2A, 0x5A, 0x3A
+                                ))),
+                                text_color: Color::from_rgb8(0xC7, 0xC9, 0xD3),
+                                border: Border {
+                                    color: Color::from_rgb8(0x4A, 0x8A, 0x5A),
+                                    width: 1.0,
+                                    radius: 2.0.into()
+                                },
+                                ..Default::default()
+                            }),
+                        button(text("Save").size(10))
+                            .on_press(Message::SnippetSave(snip))
+                            .padding([2, 5])
+                            .style(|_theme: &Theme, _status: button::Status| button::Style {
+                                background: Some(Background::Color(Color::from_rgb8(
+                                    0x3A, 0x3A, 0x5A
+                                ))),
+                                text_color: Color::from_rgb8(0xC7, 0xC9, 0xD3),
+                                border: Border {
+                                    color: Color::from_rgb8(0x5A, 0x5A, 0x8A),
+                                    width: 1.0,
+                                    radius: 2.0.into()
+                                },
+                                ..Default::default()
+                            }),
+                        button(text("Filt").size(10))
+                            .on_press(Message::EditSnippetFilters(snip))
+                            .padding([2, 5])
+                            .style(
+                                move |_theme: &Theme, _status: button::Status| button::Style {
+                                    background: if editing {
+                                        Some(Background::Color(Color::from_rgb8(0x8A, 0x6A, 0x2A)))
+                                    } else {
+                                        Some(Background::Color(Color::from_rgb8(0x2A, 0x2A, 0x2C)))
+                                    },
+                                    text_color: Color::from_rgb8(0xC7, 0xC9, 0xD3),
+                                    border: Border {
+                                        color: if editing {
+                                            Color::from_rgb8(0xC0, 0xA0, 0x5A)
+                                        } else {
+                                            Color::from_rgb8(0x4A, 0x4A, 0x4C)
+                                        },
+                                        width: 1.0,
+                                        radius: 2.0.into()
+                                    },
+                                    ..Default::default()
+                                }
+                            ),
+                    ]
+                    .spacing(4)
+                    .align_y(iced::Alignment::Center);
+                    let mut col = col.push(row);
+
+                    if editing {
+                        let eventtyp_path = format!("/-show/showfile/snippet/{snip:03}/eventtyp");
+                        let eventtyp_val = match app.parameter_values.get(&eventtyp_path) {
+                            Some(OscValue::Int(v)) => *v as u32,
+                            _ => 0,
+                        };
+                        let channels_path = format!("/-show/showfile/snippet/{snip:03}/channels");
+                        let channels_val = match app.parameter_values.get(&channels_path) {
+                            Some(OscValue::Int(v)) => *v as u32,
+                            _ => 0,
+                        };
+                        let auxbuses_path = format!("/-show/showfile/snippet/{snip:03}/auxbuses");
+                        let auxbuses_val = match app.parameter_values.get(&auxbuses_path) {
+                            Some(OscValue::Int(v)) => *v as u32,
+                            _ => 0,
+                        };
+                        let maingrps_path = format!("/-show/showfile/snippet/{snip:03}/maingrps");
+                        let maingrps_val = match app.parameter_values.get(&maingrps_path) {
+                            Some(OscValue::Int(v)) => *v as u32,
+                            _ => 0,
+                        };
+
+                        let make_bit_toggles =
+                            |label: &'static str,
+                             path: String,
+                             value: u32,
+                             groups: &'static [(u32, &'static str)]|
+                             -> Element<'_, Message> {
+                                let toggles =
+                                    groups.iter().fold(row!().spacing(2), |r, (mask, name)| {
+                                        let active = (value & mask) != 0;
+                                        let new_val = if (value & mask) == *mask {
+                                            (value & !mask) as i32
+                                        } else {
+                                            (value | mask) as i32
+                                        };
+                                        r.push(
                             button(text(*name).size(9))
                                 .on_press(Message::ParameterChanged(
                                     path.clone(),
@@ -5237,148 +5681,150 @@ fn scenes_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                                     }
                                 }),
                         )
-                    });
-                    row![
-                        text(label)
-                            .size(9)
-                            .width(Length::Fixed(36.0))
-                            .color(Color::from_rgb8(0x8E, 0x94, 0x9D)),
-                        toggles,
-                    ]
-                    .spacing(4)
-                    .align_y(iced::Alignment::Center)
-                    .into()
-                };
+                                    });
+                                row![
+                                    text(label)
+                                        .size(9)
+                                        .width(Length::Fixed(36.0))
+                                        .color(Color::from_rgb8(0x8E, 0x94, 0x9D)),
+                                    toggles,
+                                ]
+                                .spacing(4)
+                                .align_y(iced::Alignment::Center)
+                                .into()
+                            };
 
-                let eventtyp_groups: &[(u32, &str)] = &[
-                    (1 << 0, "Pre"),
-                    (1 << 1, "Cfg"),
-                    (1 << 2, "EQ"),
-                    (1 << 3, "Dyn"),
-                    (1 << 4, "Ins"),
-                    (1 << 5, "Grp"),
-                    (1 << 6, "Fdr"),
-                    (1 << 7, "Mute"),
-                    (0x1F << 8, "Snd"),
-                    (0xFF << 13, "FX"),
-                    (1 << 22, "Solo"),
-                    (1 << 23, "Rte"),
-                    (1 << 24, "Out"),
-                ];
-                let channels_groups: &[(u32, &str)] = &[
-                    (0xFF, "1-8"),
-                    (0xFF << 8, "9-16"),
-                    (0xFF << 16, "17-24"),
-                    (0xFF << 24, "25-32"),
-                ];
-                let auxbuses_groups: &[(u32, &str)] = &[
-                    (0xFF, "Aux"),
-                    (0xFF << 8, "FxR"),
-                    (0xFF << 16, "Bus1"),
-                    (0xFF << 24, "Bus9"),
-                ];
-                let maingrps_groups: &[(u32, &str)] =
-                    &[(0x3F, "Mtx"), (0x3 << 8, "Main"), (0xFF << 16, "DCA")];
+                        let eventtyp_groups: &[(u32, &str)] = &[
+                            (1 << 0, "Pre"),
+                            (1 << 1, "Cfg"),
+                            (1 << 2, "EQ"),
+                            (1 << 3, "Dyn"),
+                            (1 << 4, "Ins"),
+                            (1 << 5, "Grp"),
+                            (1 << 6, "Fdr"),
+                            (1 << 7, "Mute"),
+                            (0x1F << 8, "Snd"),
+                            (0xFF << 13, "FX"),
+                            (1 << 22, "Solo"),
+                            (1 << 23, "Rte"),
+                            (1 << 24, "Out"),
+                        ];
+                        let channels_groups: &[(u32, &str)] = &[
+                            (0xFF, "1-8"),
+                            (0xFF << 8, "9-16"),
+                            (0xFF << 16, "17-24"),
+                            (0xFF << 24, "25-32"),
+                        ];
+                        let auxbuses_groups: &[(u32, &str)] = &[
+                            (0xFF, "Aux"),
+                            (0xFF << 8, "FxR"),
+                            (0xFF << 16, "Bus1"),
+                            (0xFF << 24, "Bus9"),
+                        ];
+                        let maingrps_groups: &[(u32, &str)] =
+                            &[(0x3F, "Mtx"), (0x3 << 8, "Main"), (0xFF << 16, "DCA")];
 
-                col = col.push(make_bit_toggles(
-                    "Evt",
-                    eventtyp_path,
-                    eventtyp_val,
-                    eventtyp_groups,
-                ));
-                col = col.push(make_bit_toggles(
-                    "Ch",
-                    channels_path,
-                    channels_val,
-                    channels_groups,
-                ));
-                col = col.push(make_bit_toggles(
-                    "Aux",
-                    auxbuses_path,
-                    auxbuses_val,
-                    auxbuses_groups,
-                ));
-                col = col.push(make_bit_toggles(
-                    "Main",
-                    maingrps_path,
-                    maingrps_val,
-                    maingrps_groups,
-                ));
-            }
-            col
-        })
-        .into();
+                        col = col.push(make_bit_toggles(
+                            "Evt",
+                            eventtyp_path,
+                            eventtyp_val,
+                            eventtyp_groups,
+                        ));
+                        col = col.push(make_bit_toggles(
+                            "Ch",
+                            channels_path,
+                            channels_val,
+                            channels_groups,
+                        ));
+                        col = col.push(make_bit_toggles(
+                            "Aux",
+                            auxbuses_path,
+                            auxbuses_val,
+                            auxbuses_groups,
+                        ));
+                        col = col.push(make_bit_toggles(
+                            "Main",
+                            maingrps_path,
+                            maingrps_val,
+                            maingrps_groups,
+                        ));
+                    }
+                    col
+                })
+                .into();
 
-    let show_file_row = row![
-        text_input("Show filename", &app.show_file_name)
-            .size(11)
-            .width(Length::Fixed(180.0))
-            .on_input(Message::ShowFileNameChanged),
-        button(text("Load").size(10))
-            .on_press(Message::ShowFileLoad)
-            .padding([3, 8])
-            .style(|_theme: &Theme, _status: button::Status| button::Style {
-                background: Some(Background::Color(Color::from_rgb8(0x2A, 0x5A, 0x3A))),
-                text_color: Color::from_rgb8(0xC7, 0xC9, 0xD3),
-                border: Border {
-                    color: Color::from_rgb8(0x4A, 0x8A, 0x5A),
-                    width: 1.0,
-                    radius: 2.0.into()
-                },
-                ..Default::default()
-            }),
-        button(text("Save").size(10))
-            .on_press(Message::ShowFileSave)
-            .padding([3, 8])
-            .style(|_theme: &Theme, _status: button::Status| button::Style {
-                background: Some(Background::Color(Color::from_rgb8(0x3A, 0x3A, 0x5A))),
-                text_color: Color::from_rgb8(0xC7, 0xC9, 0xD3),
-                border: Border {
-                    color: Color::from_rgb8(0x5A, 0x5A, 0x8A),
-                    width: 1.0,
-                    radius: 2.0.into()
-                },
-                ..Default::default()
-            }),
-        Space::new().width(Length::Fixed(12.0)),
-        button(text("Undo").size(10))
-            .on_press(Message::Undo)
-            .padding([3, 8])
-            .style(|_theme: &Theme, _status: button::Status| button::Style {
-                background: Some(Background::Color(Color::from_rgb8(0x5A, 0x5A, 0x3A))),
-                text_color: Color::from_rgb8(0xC7, 0xC9, 0xD3),
-                border: Border {
-                    color: Color::from_rgb8(0x8A, 0x8A, 0x5A),
-                    width: 1.0,
-                    radius: 2.0.into()
-                },
-                ..Default::default()
-            }),
-    ]
-    .spacing(6)
-    .align_y(iced::Alignment::Center);
+            let show_file_row = row![
+                text_input("Show filename", &app.show_file_name)
+                    .size(11)
+                    .width(Length::Fixed(180.0))
+                    .on_input(Message::ShowFileNameChanged),
+                button(text("Load").size(10))
+                    .on_press(Message::ShowFileLoad)
+                    .padding([3, 8])
+                    .style(|_theme: &Theme, _status: button::Status| button::Style {
+                        background: Some(Background::Color(Color::from_rgb8(0x2A, 0x5A, 0x3A))),
+                        text_color: Color::from_rgb8(0xC7, 0xC9, 0xD3),
+                        border: Border {
+                            color: Color::from_rgb8(0x4A, 0x8A, 0x5A),
+                            width: 1.0,
+                            radius: 2.0.into()
+                        },
+                        ..Default::default()
+                    }),
+                button(text("Save").size(10))
+                    .on_press(Message::ShowFileSave)
+                    .padding([3, 8])
+                    .style(|_theme: &Theme, _status: button::Status| button::Style {
+                        background: Some(Background::Color(Color::from_rgb8(0x3A, 0x3A, 0x5A))),
+                        text_color: Color::from_rgb8(0xC7, 0xC9, 0xD3),
+                        border: Border {
+                            color: Color::from_rgb8(0x5A, 0x5A, 0x8A),
+                            width: 1.0,
+                            radius: 2.0.into()
+                        },
+                        ..Default::default()
+                    }),
+                Space::new().width(Length::Fixed(12.0)),
+                button(text("Undo").size(10))
+                    .on_press(Message::Undo)
+                    .padding([3, 8])
+                    .style(|_theme: &Theme, _status: button::Status| button::Style {
+                        background: Some(Background::Color(Color::from_rgb8(0x5A, 0x5A, 0x3A))),
+                        text_color: Color::from_rgb8(0xC7, 0xC9, 0xD3),
+                        border: Border {
+                            color: Color::from_rgb8(0x8A, 0x8A, 0x5A),
+                            width: 1.0,
+                            radius: 2.0.into()
+                        },
+                        ..Default::default()
+                    }),
+            ]
+            .spacing(6)
+            .align_y(iced::Alignment::Center);
 
-    top_panel_shell(
-        column![
-            text("Show File")
-                .size(12)
-                .color(Color::from_rgb8(0xC7, 0xC9, 0xD3)),
-            show_file_row,
-            text("Scenes")
-                .size(12)
-                .color(Color::from_rgb8(0xC7, 0xC9, 0xD3)),
-            scrollable(scenes_grid).height(Length::Fixed(100.0)),
-            text("Cues")
-                .size(12)
-                .color(Color::from_rgb8(0xC7, 0xC9, 0xD3)),
-            scrollable(cues_grid).height(Length::Fixed(60.0)),
-            text("Snippets")
-                .size(12)
-                .color(Color::from_rgb8(0xC7, 0xC9, 0xD3)),
-            scrollable(snippets_grid).height(Length::Fixed(60.0)),
-        ]
-        .spacing(4),
-    )
+            top_panel_shell(
+                column![
+                    text("Show File")
+                        .size(12)
+                        .color(Color::from_rgb8(0xC7, 0xC9, 0xD3)),
+                    show_file_row,
+                    text("Scenes")
+                        .size(12)
+                        .color(Color::from_rgb8(0xC7, 0xC9, 0xD3)),
+                    scrollable(scenes_grid).height(Length::Fixed(100.0)),
+                    text("Cues")
+                        .size(12)
+                        .color(Color::from_rgb8(0xC7, 0xC9, 0xD3)),
+                    scrollable(cues_grid).height(Length::Fixed(60.0)),
+                    text("Snippets")
+                        .size(12)
+                        .color(Color::from_rgb8(0xC7, 0xC9, 0xD3)),
+                    scrollable(snippets_grid).height(Length::Fixed(60.0)),
+                ]
+                .spacing(4),
+            )
+        }
+    }
 }
 
 fn setup_detail_panel(app: &StatusApp) -> Element<'_, Message> {
@@ -6992,15 +7438,33 @@ fn linear_meter_to_db(value: f32) -> f32 {
     (20.0 * value.log10()).clamp(-90.0, 20.0)
 }
 
-fn strip_base_path(target: FaderTarget) -> String {
-    match target {
-        FaderTarget::Channel(n) => format!("/ch/{n:02}"),
-        FaderTarget::Aux(n) => format!("/auxin/{n:02}"),
-        FaderTarget::Bus(n) => format!("/bus/{n:02}"),
-        FaderTarget::FxRtn(n) => format!("/fxrtn/{n:02}"),
-        FaderTarget::Mtx(n) => format!("/mtx/{n:02}"),
-        FaderTarget::Dca(n) => format!("/dca/{n}"),
-        FaderTarget::Main => "/main/st".to_owned(),
+fn strip_base_path(target: FaderTarget, model: MixerModel) -> String {
+    match model {
+        MixerModel::X32 => match target {
+            FaderTarget::Channel(n) => format!("/ch/{n:02}"),
+            FaderTarget::Aux(n) => format!("/auxin/{n:02}"),
+            FaderTarget::Bus(n) => format!("/bus/{n:02}"),
+            FaderTarget::FxRtn(n) => format!("/fxrtn/{n:02}"),
+            FaderTarget::Mtx(n) => format!("/mtx/{n:02}"),
+            FaderTarget::Dca(n) => format!("/dca/{n}"),
+            FaderTarget::Main => "/main/st".to_owned(),
+        },
+        MixerModel::XR18 => match target {
+            FaderTarget::Channel(n) => format!("/ch/{n:02}"),
+            FaderTarget::Bus(n) => format!("/bus/{n}"),
+            FaderTarget::FxRtn(5) => "/rtn/aux".to_owned(),
+            FaderTarget::FxRtn(n) => format!("/rtn/{n}"),
+            FaderTarget::Dca(n) => format!("/dca/{n}"),
+            FaderTarget::Main => "/lr".to_owned(),
+            _ => String::new(),
+        },
+    }
+}
+
+fn main_base_path(model: MixerModel) -> String {
+    match model {
+        MixerModel::X32 => "/main/st".to_owned(),
+        MixerModel::XR18 => "/lr".to_owned(),
     }
 }
 
@@ -7099,22 +7563,25 @@ fn toggle_button_style(active: bool, color: Color) -> button::Style {
     }
 }
 
-fn meter_subscription(mixer_addr: SocketAddr) -> Subscription<Message> {
-    Subscription::run_with(mixer_addr, meter_worker).map(Message::MetersLoaded)
+fn meter_subscription(mixer_addr: SocketAddr, model: MixerModel) -> Subscription<Message> {
+    Subscription::run_with((mixer_addr, model), meter_worker).map(Message::MetersLoaded)
 }
 
-fn master_meter_subscription(mixer_addr: SocketAddr) -> Subscription<Message> {
-    Subscription::run_with(mixer_addr, master_meter_worker)
+fn master_meter_subscription(mixer_addr: SocketAddr, model: MixerModel) -> Subscription<Message> {
+    Subscription::run_with((mixer_addr, model), master_meter_worker)
         .map(|r| Message::MasterMetersLoaded(Box::new(r)))
 }
 
-fn rta_meter_subscription(mixer_addr: SocketAddr) -> Subscription<Message> {
-    Subscription::run_with(mixer_addr, rta_meter_worker)
+fn rta_meter_subscription(mixer_addr: SocketAddr, model: MixerModel) -> Subscription<Message> {
+    Subscription::run_with((mixer_addr, model), rta_meter_worker)
         .map(|r| Message::RtaMetersLoaded(Box::new(r)))
 }
 
-fn state_worker(mixer_addr: &SocketAddr) -> BoxStream<'static, Result<ConsoleUpdate, String>> {
+fn state_worker(
+    (mixer_addr, model): &(SocketAddr, MixerModel),
+) -> BoxStream<'static, Result<ConsoleUpdate, String>> {
     let mixer_addr = *mixer_addr;
+    let model = *model;
     stream::channel(
         64,
         move |mut output: mpsc::Sender<Result<ConsoleUpdate, String>>| async move {
@@ -7154,7 +7621,7 @@ fn state_worker(mixer_addr: &SocketAddr) -> BoxStream<'static, Result<ConsoleUpd
                 .await
                 {
                     Ok(Ok((received, _))) => {
-                        if let Some(update) = parse_console_update(&buffer[..received]) {
+                        if let Some(update) = parse_console_update(&buffer[..received], model) {
                             let _ = output.send(Ok(update)).await;
                         }
                     }
@@ -7172,8 +7639,11 @@ fn state_worker(mixer_addr: &SocketAddr) -> BoxStream<'static, Result<ConsoleUpd
     .boxed()
 }
 
-fn meter_worker(mixer_addr: &SocketAddr) -> BoxStream<'static, Result<Vec<StripMeter>, String>> {
+fn meter_worker(
+    (mixer_addr, model): &(SocketAddr, MixerModel),
+) -> BoxStream<'static, Result<Vec<StripMeter>, String>> {
     let mixer_addr = *mixer_addr;
+    let model = *model;
     stream::channel(
         32,
         move |mut output: mpsc::Sender<Result<Vec<StripMeter>, String>>| async move {
@@ -7234,7 +7704,7 @@ fn meter_worker(mixer_addr: &SocketAddr) -> BoxStream<'static, Result<Vec<StripM
                 .await
                 {
                     Ok(Ok((received, _))) => {
-                        if let Ok(meters) = parse_input_meter_packet(&buffer[..received]) {
+                        if let Ok(meters) = parse_input_meter_packet(&buffer[..received], model) {
                             let _ = output.send(Ok(meters)).await;
                         }
                     }
@@ -7255,9 +7725,10 @@ fn meter_worker(mixer_addr: &SocketAddr) -> BoxStream<'static, Result<Vec<StripM
 }
 
 fn master_meter_worker(
-    mixer_addr: &SocketAddr,
+    (mixer_addr, model): &(SocketAddr, MixerModel),
 ) -> BoxStream<'static, Result<MainMeterLevels, String>> {
     let mixer_addr = *mixer_addr;
+    let model = *model;
     stream::channel(
         32,
         move |mut output: mpsc::Sender<Result<MainMeterLevels, String>>| async move {
@@ -7309,7 +7780,7 @@ fn master_meter_worker(
                 .await
                 {
                     Ok(Ok((received, _))) => {
-                        if let Ok(levels) = parse_main_meter_packet(&buffer[..received]) {
+                        if let Ok(levels) = parse_main_meter_packet(&buffer[..received], model) {
                             let _ = output.send(Ok(levels)).await;
                         }
                     }
@@ -7331,8 +7802,11 @@ fn master_meter_worker(
     .boxed()
 }
 
-fn rta_meter_worker(mixer_addr: &SocketAddr) -> BoxStream<'static, Result<[f32; 100], String>> {
+fn rta_meter_worker(
+    (mixer_addr, model): &(SocketAddr, MixerModel),
+) -> BoxStream<'static, Result<[f32; 100], String>> {
     let mixer_addr = *mixer_addr;
+    let model = *model;
     stream::channel(
         32,
         move |mut output: mpsc::Sender<Result<[f32; 100], String>>| async move {
@@ -7384,7 +7858,7 @@ fn rta_meter_worker(mixer_addr: &SocketAddr) -> BoxStream<'static, Result<[f32; 
                 .await
                 {
                     Ok(Ok((received, _))) => {
-                        if let Ok(levels) = parse_rta_meter_packet(&buffer[..received]) {
+                        if let Ok(levels) = parse_rta_meter_packet(&buffer[..received], model) {
                             let _ = output.send(Ok(levels)).await;
                         }
                     }

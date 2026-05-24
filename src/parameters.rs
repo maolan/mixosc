@@ -1,7 +1,7 @@
 // Auto-generated from X32 OSC specification.
 // Do not edit manually.
 
-use crate::x32::{
+use crate::common::{
     osc_address, osc_float_message, osc_int_message, osc_padded_len, osc_string, osc_string_message,
 };
 
