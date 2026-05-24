@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=MixOSC
+Comment=OSC mixer control surface for Behringer X32 and X-Air
+GenericName=Mixer Control Surface
+Exec=/usr/bin/mixosc %f
+Icon=/usr/share/icons/hicolor/512x512/apps/mixosc.png
+Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=audio;mixer;osc;x32;xr18;behringer;
+StartupNotify=true

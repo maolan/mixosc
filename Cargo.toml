@@ -1,6 +1,6 @@
 [package]
 name = "mixosc"
-version = "0.0.6"
+version = "0.0.7"
 edition = "2024"
 description = "Rust OSC client and control surface for Behringer X32-family mixers"
 license = "BSD-2-Clause"
