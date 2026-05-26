@@ -183,11 +183,18 @@ fn config_for_model(model: MixerModel) -> MixerConfig {
 }
 
 #[derive(Debug)]
+pub struct MixOscApp {
+    mixers: Vec<StatusApp>,
+    active_mixer: usize,
+    discovered_mixers: Vec<DiscoveredMixer>,
+    manual_target: bool,
+    discovery_in_flight: bool,
+}
+
+#[derive(Debug)]
 pub struct StatusApp {
     mixer_addr: Option<SocketAddr>,
     discovered_mixer: Option<DiscoveredMixer>,
-    discovered_mixers: Vec<DiscoveredMixer>,
-    manual_target: bool,
     probe_in_flight: bool,
     names: [Option<String>; MAX_STRIP_COUNT],
     colors: [Option<u8>; MAX_STRIP_COUNT],
@@ -227,8 +234,6 @@ impl Default for StatusApp {
         Self {
             mixer_addr: None,
             discovered_mixer: None,
-            discovered_mixers: Vec::new(),
-            manual_target: false,
             probe_in_flight: false,
             names: std::array::from_fn(|_| None),
             colors: [None; MAX_STRIP_COUNT],
@@ -315,6 +320,8 @@ pub enum ConnectionStatus {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    MixerEvent(usize, Box<Message>),
+    TabSelected(usize),
     Tick,
     ConsoleUpdateReceived(Result<ConsoleUpdate, String>),
     GainChanged(usize, f32),
@@ -375,84 +382,163 @@ pub enum Message {
     EditSceneSafes(i32),
 }
 
-pub fn new() -> (StatusApp, Task<Message>) {
+pub fn new() -> (MixOscApp, Task<Message>) {
     let maybe_target = mixer_addr_from_args_or_env();
-    let app = StatusApp {
-        mixer_addr: maybe_target,
-        discovered_mixer: None,
+
+    let mut app = MixOscApp {
+        mixers: Vec::new(),
+        active_mixer: 0,
         discovered_mixers: Vec::new(),
         manual_target: maybe_target.is_some(),
-        probe_in_flight: true,
-        names: std::array::from_fn(|_| None),
-        colors: [None; MAX_STRIP_COUNT],
-        gains: [None; MAX_STRIP_COUNT],
-        gain_sources: [GainSource::Trim; MAX_STRIP_COUNT],
-        gain_drag_values: [None; MAX_STRIP_COUNT],
-        sends: [[None; MAX_SEND_BUS_COUNT]; MAX_STRIP_COUNT],
-        pans: [None; MAX_STRIP_COUNT],
-        faders: [None; MAX_STRIP_COUNT],
-        meters_db: [-90.0; MAX_STRIP_COUNT],
-        master_meters_db: [-90.0, -90.0],
-        rta_meters_db: [-128.0; 100],
-        muted: [None; MAX_STRIP_COUNT],
-        soloed: [None; MAX_STRIP_COUNT],
-        master_fader: None,
-        master_muted: None,
-        master_soloed: None,
-        master_color: None,
-        active_view: AppView::Mixer,
-        selected_strip: Some(SelectedStrip::Strip(0)),
-        status: ConnectionStatus::Checking,
-        last_error: None,
-        parameter_values: std::collections::HashMap::new(),
-        editing_name: None,
-        editing_scene: None,
-        copy_buffer: None,
-        dca_spill: None,
-        mute_spill: None,
-        show_file_name: String::new(),
-        editing_scene_safes: None,
-        editing_snippet_filters: None,
-        mixer_model: MixerModel::X32,
+        discovery_in_flight: maybe_target.is_none(),
     };
 
     let task = match maybe_target {
-        Some(mixer_addr) => spawn_probe(mixer_addr),
+        Some(addr) => {
+            app.mixers.push(StatusApp {
+                mixer_addr: Some(addr),
+                status: ConnectionStatus::Checking,
+                probe_in_flight: true,
+                ..Default::default()
+            });
+            spawn_probe(addr).map(|m| Message::MixerEvent(0, Box::new(m)))
+        }
         None => spawn_discovery(),
     };
 
     (app, task)
 }
 
-pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
+pub fn update(app: &mut MixOscApp, message: Message) -> Task<Message> {
     match message {
-        Message::Tick if app.probe_in_flight => Task::none(),
-        Message::Tick => {
-            app.probe_in_flight = true;
-            match app.mixer_addr {
-                Some(mixer_addr) => spawn_probe(mixer_addr),
-                None => spawn_discovery(),
+        Message::MixerEvent(index, msg) => {
+            if let Some(mixer) = app.mixers.get_mut(index) {
+                let task = update_mixer(mixer, *msg);
+                task.map(move |m| Message::MixerEvent(index, Box::new(m)))
+            } else {
+                Task::none()
             }
         }
+        Message::TabSelected(index) => {
+            app.active_mixer = index.min(app.mixers.len().saturating_sub(1));
+            Task::none()
+        }
+        Message::DiscoveryFinished(result) => {
+            app.discovery_in_flight = false;
+            match result {
+                Ok(mixers) => {
+                    let mut tasks = Vec::new();
+                    for mixer in mixers {
+                        let already_connected =
+                            app.mixers.iter().any(|m| m.mixer_addr == Some(mixer.addr));
+                        if !already_connected {
+                            let idx = app.mixers.len();
+                            app.mixers.push(StatusApp {
+                                mixer_addr: Some(mixer.addr),
+                                discovered_mixer: Some(mixer.clone()),
+                                mixer_model: mixer.model,
+                                status: ConnectionStatus::Checking,
+                                probe_in_flight: true,
+                                ..Default::default()
+                            });
+                            tasks.push(
+                                spawn_probe(mixer.addr)
+                                    .map(move |m| Message::MixerEvent(idx, Box::new(m))),
+                            );
+                        }
+                    }
+                    app.discovered_mixers = app
+                        .mixers
+                        .iter()
+                        .filter_map(|m| m.discovered_mixer.clone())
+                        .collect();
+                    if !app.mixers.is_empty() && app.active_mixer >= app.mixers.len() {
+                        app.active_mixer = 0;
+                    }
+                    Task::batch(tasks)
+                }
+                Err(_) => {
+                    app.discovered_mixers.clear();
+                    Task::none()
+                }
+            }
+        }
+        Message::Tick => {
+            let mut tasks = Vec::new();
+            for (index, mixer) in app.mixers.iter_mut().enumerate() {
+                if let Some(addr) = mixer.mixer_addr
+                    && !mixer.probe_in_flight
+                {
+                    mixer.probe_in_flight = true;
+                    tasks.push(
+                        spawn_probe(addr).map(move |m| Message::MixerEvent(index, Box::new(m))),
+                    );
+                }
+            }
+            if !app.manual_target && !app.discovery_in_flight && app.mixers.is_empty() {
+                app.discovery_in_flight = true;
+                tasks.push(spawn_discovery());
+            }
+            Task::batch(tasks)
+        }
+        Message::Disconnect => {
+            if app.active_mixer < app.mixers.len() {
+                app.mixers.remove(app.active_mixer);
+                if app.active_mixer >= app.mixers.len() && !app.mixers.is_empty() {
+                    app.active_mixer = app.mixers.len() - 1;
+                }
+            }
+            Task::none()
+        }
         Message::MixerSelected(addr) => {
-            app.mixer_addr = Some(addr);
-            app.manual_target = true;
-            app.probe_in_flight = true;
-            app.status = ConnectionStatus::Checking;
-            app.last_error = None;
-            app.discovered_mixer = app
+            if let Some(idx) = app.mixers.iter().position(|m| m.mixer_addr == Some(addr)) {
+                app.active_mixer = idx;
+                Task::none()
+            } else if let Some(discovered) = app
                 .discovered_mixers
                 .iter()
                 .find(|m| m.addr == addr)
-                .cloned();
-            if let Some(ref mixer) = app.discovered_mixer {
-                app.mixer_model = mixer.model;
+                .cloned()
+            {
+                let idx = app.mixers.len();
+                app.mixers.push(StatusApp {
+                    mixer_addr: Some(addr),
+                    discovered_mixer: Some(discovered.clone()),
+                    mixer_model: discovered.model,
+                    status: ConnectionStatus::Checking,
+                    probe_in_flight: true,
+                    ..Default::default()
+                });
+                app.active_mixer = idx;
+                spawn_probe(addr).map(move |m| Message::MixerEvent(idx, Box::new(m)))
+            } else {
+                Task::none()
             }
+        }
+        msg => {
+            if let Some(mixer) = app.mixers.get_mut(app.active_mixer) {
+                let index = app.active_mixer;
+                let task = update_mixer(mixer, msg);
+                task.map(move |m| Message::MixerEvent(index, Box::new(m)))
+            } else {
+                Task::none()
+            }
+        }
+    }
+}
+
+pub fn update_mixer(app: &mut StatusApp, message: Message) -> Task<Message> {
+    match message {
+        Message::Tick => Task::none(),
+        Message::MixerSelected(addr) => {
+            app.mixer_addr = Some(addr);
+            app.probe_in_flight = true;
+            app.status = ConnectionStatus::Checking;
+            app.last_error = None;
             spawn_probe(addr)
         }
         Message::Disconnect => {
             app.mixer_addr = None;
-            app.manual_target = false;
             app.discovered_mixer = None;
             app.status = ConnectionStatus::Disconnected;
             app.last_error = None;
@@ -1064,27 +1150,7 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
 
             Task::none()
         }
-        Message::DiscoveryFinished(result) => {
-            app.probe_in_flight = false;
-
-            match result {
-                Ok(mixers) => {
-                    app.discovered_mixers = mixers;
-                    if app.discovered_mixers.is_empty() {
-                        app.last_error =
-                            Some("no mixer discovered on the local network".to_owned());
-                    } else {
-                        app.last_error = None;
-                    }
-                    Task::none()
-                }
-                Err(error) => {
-                    app.discovered_mixers.clear();
-                    app.last_error = Some(error);
-                    Task::none()
-                }
-            }
-        }
+        Message::DiscoveryFinished(_) => Task::none(),
         Message::SceneRecall(index) => {
             let Some(mixer_addr) = app.mixer_addr else {
                 return Task::none();
@@ -1240,6 +1306,8 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                 Task::none()
             }
         }
+        Message::MixerEvent(_, _) => Task::none(),
+        Message::TabSelected(_) => Task::none(),
         Message::ProbeFinished(result) => {
             app.probe_in_flight = false;
             let was_connected = matches!(app.status, ConnectionStatus::Connected(_));
@@ -1284,10 +1352,6 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                     app.master_muted = None;
                     app.master_soloed = None;
                     app.master_color = None;
-                    if !app.manual_target {
-                        app.mixer_addr = None;
-                        app.discovered_mixer = None;
-                    }
                 }
                 Err(error) => {
                     app.status = ConnectionStatus::Disconnected;
@@ -1306,10 +1370,6 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
                     app.master_muted = None;
                     app.master_soloed = None;
                     app.master_color = None;
-                    if !app.manual_target {
-                        app.mixer_addr = None;
-                        app.discovered_mixer = None;
-                    }
                 }
             }
 
@@ -1318,27 +1378,42 @@ pub fn update(app: &mut StatusApp, message: Message) -> Task<Message> {
     }
 }
 
-pub fn subscription(_app: &StatusApp) -> Subscription<Message> {
+pub fn subscription(app: &MixOscApp) -> Subscription<Message> {
     let ticker = time::every(Duration::from_secs(3)).map(|_| Message::Tick);
+    let mut subs = vec![ticker];
 
-    if let Some(mixer_addr) = _app.mixer_addr {
-        Subscription::batch([
-            ticker,
-            state_subscription(mixer_addr, _app.mixer_model),
-            meter_subscription(mixer_addr, _app.mixer_model),
-            master_meter_subscription(mixer_addr, _app.mixer_model),
-            rta_meter_subscription(mixer_addr, _app.mixer_model),
-        ])
-    } else {
-        ticker
+    for (index, mixer) in app.mixers.iter().enumerate() {
+        if let Some(addr) = mixer.mixer_addr {
+            subs.push(state_subscription(addr, mixer.mixer_model, index));
+            subs.push(meter_subscription(addr, mixer.mixer_model, index));
+            subs.push(master_meter_subscription(addr, mixer.mixer_model, index));
+            subs.push(rta_meter_subscription(addr, mixer.mixer_model, index));
+        }
     }
+
+    Subscription::batch(subs)
 }
 
-pub fn theme(_app: &StatusApp) -> Theme {
+pub fn theme(_app: &MixOscApp) -> Theme {
     Theme::TokyoNight
 }
 
-pub fn view(app: &StatusApp) -> Element<'_, Message> {
+pub fn view(app: &MixOscApp) -> Element<'_, Message> {
+    if app.mixers.is_empty() {
+        return mixer_selection_view(&app.discovered_mixers, app.discovery_in_flight, None);
+    }
+
+    let tabs = mixer_tabs(app);
+    let active = &app.mixers[app.active_mixer];
+    let mixer_content = view_mixer(active);
+
+    column![tabs, mixer_content]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+fn view_mixer(app: &StatusApp) -> Element<'_, Message> {
     let content: Element<'_, Message> = if matches!(app.status, ConnectionStatus::Connected(_)) {
         let mixer_view: Element<'_, Message> = if let Some(panel) = top_detail_panel(app) {
             column![panel, mixer_strips(app)]
@@ -1354,7 +1429,7 @@ pub fn view(app: &StatusApp) -> Element<'_, Message> {
             .height(Length::Fill)
             .into()
     } else {
-        mixer_selection_view(app)
+        mixer_selection_view(&[], false, app.last_error.as_deref())
     };
 
     let body = if matches!(app.status, ConnectionStatus::Connected(_)) {
@@ -1384,16 +1459,20 @@ pub fn view(app: &StatusApp) -> Element<'_, Message> {
         .into()
 }
 
-fn mixer_selection_view(app: &StatusApp) -> Element<'_, Message> {
+fn mixer_selection_view<'a>(
+    discovered_mixers: &'a [DiscoveredMixer],
+    searching: bool,
+    last_error: Option<&'a str>,
+) -> Element<'a, Message> {
     let title = text("Discovered Mixers").size(28);
 
-    let mixer_list: Element<'_, Message> = if app.discovered_mixers.is_empty() {
-        if app.probe_in_flight {
+    let mixer_list: Element<'_, Message> = if discovered_mixers.is_empty() {
+        if searching {
             text("Searching for mixers on the network...")
                 .size(16)
                 .color(Color::from_rgb8(0xC7, 0xC9, 0xD3))
                 .into()
-        } else if let Some(ref error) = app.last_error {
+        } else if let Some(error) = last_error {
             text(format!("Error: {error}"))
                 .size(14)
                 .color(Color::from_rgb8(0xF0, 0x7C, 0x82))
@@ -1405,7 +1484,7 @@ fn mixer_selection_view(app: &StatusApp) -> Element<'_, Message> {
                 .into()
         }
     } else {
-        let mixers = app.discovered_mixers.iter().fold(
+        let mixers = discovered_mixers.iter().fold(
             column!().spacing(8).width(Length::Fill),
             |col, mixer| {
                 let name = mixer.name.as_deref().unwrap_or("Unknown Mixer");
@@ -1469,6 +1548,65 @@ fn mixer_selection_view(app: &StatusApp) -> Element<'_, Message> {
         .padding([24, 16])
         .center_x(Fill)
         .center_y(Fill)
+        .into()
+}
+
+fn mixer_tabs(app: &MixOscApp) -> Element<'_, Message> {
+    let tabs = app.mixers.iter().enumerate().fold(
+        row!().spacing(4).padding([4, 8]),
+        |row, (index, mixer)| {
+            let label = mixer
+                .discovered_mixer
+                .as_ref()
+                .and_then(|m| m.name.clone())
+                .or_else(|| mixer.mixer_addr.map(|a| a.ip().to_string()))
+                .unwrap_or_else(|| format!("Mixer {}", index + 1));
+            let is_active = index == app.active_mixer;
+            let bg = if is_active {
+                Color::from_rgb8(0x2A, 0x2A, 0x2A)
+            } else {
+                Color::from_rgb8(0x1C, 0x1C, 0x1C)
+            };
+            let border_color = if is_active {
+                Color::from_rgb8(0x4B, 0x4B, 0x4B)
+            } else {
+                Color::from_rgb8(0x3A, 0x3A, 0x3A)
+            };
+            let text_color = if is_active {
+                Color::from_rgb8(0x29, 0xE6, 0xF2)
+            } else {
+                Color::from_rgb8(0xA9, 0xAC, 0xB3)
+            };
+            row.push(
+                button(text(label).size(13))
+                    .padding([6, 14])
+                    .style(
+                        move |_theme: &Theme, _status: button::Status| button::Style {
+                            background: Some(Background::Color(bg)),
+                            text_color,
+                            border: Border {
+                                color: border_color,
+                                width: 1.0,
+                                radius: 4.0.into(),
+                            },
+                            ..Default::default()
+                        },
+                    )
+                    .on_press(Message::TabSelected(index)),
+            )
+        },
+    );
+
+    container(tabs)
+        .style(|_theme: &Theme| container::Style {
+            background: Some(Background::Color(Color::from_rgb8(0x14, 0x14, 0x14))),
+            border: Border {
+                color: Color::from_rgb8(0x2A, 0x2A, 0x2A),
+                width: 1.0,
+                radius: 0.0.into(),
+            },
+            ..Default::default()
+        })
         .into()
 }
 
@@ -2880,8 +3018,23 @@ fn spawn_discovery() -> Task<Message> {
     )
 }
 
-fn state_subscription(mixer_addr: SocketAddr, model: MixerModel) -> Subscription<Message> {
-    Subscription::run_with((mixer_addr, model), state_worker).map(Message::ConsoleUpdateReceived)
+fn state_subscription(
+    mixer_addr: SocketAddr,
+    model: MixerModel,
+    index: usize,
+) -> Subscription<Message> {
+    Subscription::run_with((mixer_addr, model, index), state_worker_indexed)
+}
+
+fn state_worker_indexed(
+    (mixer_addr, model, index): &(SocketAddr, MixerModel, usize),
+) -> BoxStream<'static, Message> {
+    let mixer_addr = *mixer_addr;
+    let model = *model;
+    let index = *index;
+    state_worker(&(mixer_addr, model))
+        .map(move |r| Message::MixerEvent(index, Box::new(Message::ConsoleUpdateReceived(r))))
+        .boxed()
 }
 
 fn mixer_addr_from_args_or_env() -> Option<SocketAddr> {
@@ -7563,18 +7716,63 @@ fn toggle_button_style(active: bool, color: Color) -> button::Style {
     }
 }
 
-fn meter_subscription(mixer_addr: SocketAddr, model: MixerModel) -> Subscription<Message> {
-    Subscription::run_with((mixer_addr, model), meter_worker).map(Message::MetersLoaded)
+fn meter_subscription(
+    mixer_addr: SocketAddr,
+    model: MixerModel,
+    index: usize,
+) -> Subscription<Message> {
+    Subscription::run_with((mixer_addr, model, index), meter_worker_indexed)
 }
 
-fn master_meter_subscription(mixer_addr: SocketAddr, model: MixerModel) -> Subscription<Message> {
-    Subscription::run_with((mixer_addr, model), master_meter_worker)
-        .map(|r| Message::MasterMetersLoaded(Box::new(r)))
+fn meter_worker_indexed(
+    (mixer_addr, model, index): &(SocketAddr, MixerModel, usize),
+) -> BoxStream<'static, Message> {
+    let mixer_addr = *mixer_addr;
+    let model = *model;
+    let index = *index;
+    meter_worker(&(mixer_addr, model))
+        .map(move |r| Message::MixerEvent(index, Box::new(Message::MetersLoaded(r))))
+        .boxed()
 }
 
-fn rta_meter_subscription(mixer_addr: SocketAddr, model: MixerModel) -> Subscription<Message> {
-    Subscription::run_with((mixer_addr, model), rta_meter_worker)
-        .map(|r| Message::RtaMetersLoaded(Box::new(r)))
+fn master_meter_subscription(
+    mixer_addr: SocketAddr,
+    model: MixerModel,
+    index: usize,
+) -> Subscription<Message> {
+    Subscription::run_with((mixer_addr, model, index), master_meter_worker_indexed)
+}
+
+fn master_meter_worker_indexed(
+    (mixer_addr, model, index): &(SocketAddr, MixerModel, usize),
+) -> BoxStream<'static, Message> {
+    let mixer_addr = *mixer_addr;
+    let model = *model;
+    let index = *index;
+    master_meter_worker(&(mixer_addr, model))
+        .map(move |r| {
+            Message::MixerEvent(index, Box::new(Message::MasterMetersLoaded(Box::new(r))))
+        })
+        .boxed()
+}
+
+fn rta_meter_subscription(
+    mixer_addr: SocketAddr,
+    model: MixerModel,
+    index: usize,
+) -> Subscription<Message> {
+    Subscription::run_with((mixer_addr, model, index), rta_meter_worker_indexed)
+}
+
+fn rta_meter_worker_indexed(
+    (mixer_addr, model, index): &(SocketAddr, MixerModel, usize),
+) -> BoxStream<'static, Message> {
+    let mixer_addr = *mixer_addr;
+    let model = *model;
+    let index = *index;
+    rta_meter_worker(&(mixer_addr, model))
+        .map(move |r| Message::MixerEvent(index, Box::new(Message::RtaMetersLoaded(Box::new(r)))))
+        .boxed()
 }
 
 fn state_worker(

@@ -20,7 +20,11 @@ Rust OSC client for Behringer **X32** and **X-Air** digital mixers.
 
 ## Current GUI behavior
 
-The application discovers mixers automatically and loads a control surface matching the detected model.
+The application discovers mixers automatically on the local network, **connects to every mixer it finds**, and opens a tab for each one. You can switch between mixers by clicking their tabs at the top of the window.
+
+When only one mixer is discovered (or when a specific address is given), the tab bar still appears with a single tab.
+
+The control surface loaded in each tab matches the detected model of that mixer.
 
 ### X32 layout
 
@@ -84,13 +88,13 @@ Implementation details from the current code:
 
 ## Running
 
-Automatic discovery on the local network:
+Automatic discovery on the local network (connects to **all** discovered mixers):
 
 ```bash
 cargo run
 ```
 
-Connect to a specific mixer:
+Connect to a specific mixer only:
 
 ```bash
 cargo run -- 192.168.1.62
