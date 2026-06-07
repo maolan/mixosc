@@ -2924,6 +2924,7 @@ fn spawn_load_panel_parameters(app: &StatusApp, mixer_addr: SocketAddr) -> Optio
                     p.push("/config/linkcfg/dyn".to_owned());
                     p.push("/config/linkcfg/fdrmute".to_owned());
                     p.extend((1..=32).map(|n| format!("/ch/{n:02}/config/source")));
+                    p.extend((1..=8).map(|n| format!("/auxin/{n:02}/config/source")));
                     p.push("/config/routing/OUT/1-4".to_owned());
                     p.push("/config/routing/OUT/5-8".to_owned());
                     p.push("/config/routing/OUT/9-12".to_owned());
@@ -6979,6 +6980,36 @@ fn routing_detail_panel(app: &StatusApp) -> Element<'_, Message> {
         scrollable(src_col).height(Length::Fixed(200.0)),
     ));
 
+    // Aux In source routing (X32 only)
+    if app.mixer_model == MixerModel::X32 {
+        let aux_in_src_col: Element<'_, Message> = (1..=8)
+            .fold(column!().spacing(3), |col, n| {
+                let path = format!("/auxin/{n:02}/config/source");
+                let val = match app.parameter_values.get(&path) {
+                    Some(OscValue::Int(v)) => *v,
+                    _ => 0,
+                };
+                col.push(
+                    row![
+                        text(format!("Aux {n:02}"))
+                            .size(10)
+                            .width(Length::Fixed(40.0))
+                            .color(Color::from_rgb8(0xC7, 0xC9, 0xD3)),
+                        param_slider_labeled("Src", path, val as f32 / 64.0, |v| {
+                            auxin_source_name((v * 64.0).round() as i32)
+                        }),
+                    ]
+                    .spacing(4)
+                    .align_y(iced::Alignment::Center),
+                )
+            })
+            .into();
+        panels = panels.push(detail_panel(
+            "Aux In Src",
+            scrollable(aux_in_src_col).height(Length::Fixed(120.0)),
+        ));
+    }
+
     // Output Routing - individual source selectors
     let out_routing_col: Element<'_, Message> = [
         ("/config/routing/OUT/1-4", 1u8),
@@ -7548,6 +7579,28 @@ fn format_q(value: f32) -> String {
 
 fn format_pct(value: f32) -> String {
     format!("{:.0}%", value * 100.0)
+}
+
+fn auxin_source_name(value: i32) -> String {
+    match value {
+        0 => "OFF".to_owned(),
+        1..=32 => format!("In{value:02}"),
+        33..=38 => format!("Aux {:02}", value - 32),
+        39 => "USB L".to_owned(),
+        40 => "USB R".to_owned(),
+        41..=48 => {
+            let names = [
+                "Fx1L", "Fx1R", "Fx2L", "Fx2R", "Fx3L", "Fx3R", "Fx4L", "Fx4R",
+            ];
+            names
+                .get((value - 41) as usize)
+                .copied()
+                .unwrap_or("?")
+                .to_owned()
+        }
+        49..=64 => format!("Bus {:02}", value - 48),
+        _ => format!("{value}"),
+    }
 }
 
 fn key_source_name(value: i32) -> String {
