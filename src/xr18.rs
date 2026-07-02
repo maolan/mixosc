@@ -2,8 +2,8 @@ use crate::common::{
     COLOR_RESPONSE_SUFFIX, ConsoleUpdate, FADER_RESPONSE_SUFFIX, FaderTarget, GAIN_RESPONSE_SUFFIX,
     HEADAMP_GAIN_RESPONSE_SUFFIX, MUTE_RESPONSE_SUFFIX, MainMeterLevels, NAME_RESPONSE_SUFFIX,
     PAN_RESPONSE_SUFFIX, ProbeError, SOLO_RESPONSE_PREFIX, StripColor, StripFader, StripGain,
-    StripMeter, StripMute, StripName, StripPan, StripSend, StripSolo, parse_color_value,
-    parse_float_value, parse_meter_blob, parse_string_value, parse_switch_value,
+    StripMeter, StripMute, StripName, StripPan, StripSend, StripSolo, osc_address, osc_padded_len,
+    parse_color_value, parse_float_value, parse_string_value, parse_switch_value,
     quantize_gain_step,
 };
 
@@ -332,58 +332,140 @@ pub fn encode_headamp_gain(db: f32) -> f32 {
     ((quantize_gain_step(db, -12.0, 0.1) + 12.0) / 32.0).clamp(0.0, 1.0)
 }
 
-pub fn parse_input_meter_packet(packet: &[u8]) -> Result<Vec<StripMeter>, ProbeError> {
-    let floats = parse_meter_blob(packet, "/meters/0", "meters/0")?;
+const XR18_INPUT_METERS_PATH: &str = "/meters/1";
+const XR18_MAIN_METERS_PATH: &str = "/meters/1";
+const XR18_METER_COUNT: usize = 20;
 
-    let mut strips = Vec::with_capacity(21);
-    for index in 0..21 {
-        let target = if index < 16 {
-            FaderTarget::Channel((index + 1) as u8)
-        } else if index < 20 {
-            FaderTarget::FxRtn((index - 15) as u8)
-        } else {
-            FaderTarget::FxRtn(5)
-        };
-        let start = index * 4;
-        if start + 4 > floats.len() {
-            break;
-        }
-        let bytes: [u8; 4] = floats[start..start + 4]
+fn xr18_meter_blob<'a>(packet: &'a [u8], expected_path: &str) -> Result<&'a [u8], ProbeError> {
+    let path = osc_address(packet)
+        .ok_or_else(|| ProbeError::Protocol("meter reply missing OSC address".to_owned()))?;
+    if path != expected_path {
+        return Err(ProbeError::Protocol(format!(
+            "unexpected XR18 meter reply path '{path}'"
+        )));
+    }
+
+    let type_tag_offset = osc_padded_len(packet).ok_or_else(|| {
+        ProbeError::Protocol("XR18 meter reply missing type tag offset".to_owned())
+    })?;
+    if packet.get(type_tag_offset..type_tag_offset + 4) != Some(b",b\0\0") {
+        return Err(ProbeError::Protocol(
+            "XR18 meter reply is not a blob".to_owned(),
+        ));
+    }
+
+    let size_offset = type_tag_offset + 4;
+    let size_bytes: [u8; 4] = packet
+        .get(size_offset..size_offset + 4)
+        .ok_or_else(|| ProbeError::Protocol("XR18 meter blob size truncated".to_owned()))?
+        .try_into()
+        .map_err(|_| ProbeError::Protocol("XR18 meter blob size slice mismatch".to_owned()))?;
+    let size = u32::from_be_bytes(size_bytes) as usize;
+
+    packet
+        .get(size_offset + 4..size_offset + 4 + size)
+        .ok_or_else(|| ProbeError::Protocol("XR18 meter blob data truncated".to_owned()))
+}
+
+fn int16_db_to_linear(value: i16) -> f32 {
+    let db = f32::from(value) / 256.0;
+    10.0_f32.powf(db / 20.0)
+}
+
+pub fn parse_input_meter_packet(packet: &[u8]) -> Result<Vec<StripMeter>, ProbeError> {
+    let blob = xr18_meter_blob(packet, XR18_INPUT_METERS_PATH)?;
+    if blob.len() < XR18_METER_COUNT * 2 {
+        return Err(ProbeError::Protocol(
+            "XR18 input meter blob is shorter than expected".to_owned(),
+        ));
+    }
+
+    let mut strips = Vec::with_capacity(16);
+    for index in 0..16 {
+        let bytes: [u8; 2] = blob[index * 2..index * 2 + 2]
             .try_into()
-            .map_err(|_| ProbeError::Protocol("meter float slice size mismatch".to_owned()))?;
+            .map_err(|_| ProbeError::Protocol("XR18 meter int16 slice size mismatch".to_owned()))?;
         strips.push(StripMeter {
-            target,
-            level_linear: f32::from_le_bytes(bytes),
+            target: FaderTarget::Channel((index + 1) as u8),
+            level_linear: int16_db_to_linear(i16::from_le_bytes(bytes)),
         });
     }
     Ok(strips)
 }
 
 pub fn parse_main_meter_packet(packet: &[u8]) -> Result<MainMeterLevels, ProbeError> {
-    let floats = parse_meter_blob(packet, "/meters/2", "meters/2")?;
-    if floats.len() < 8 * 4 {
+    let blob = xr18_meter_blob(packet, XR18_MAIN_METERS_PATH)?;
+    if blob.len() < XR18_METER_COUNT * 2 {
         return Err(ProbeError::Protocol(
-            "main meter blob is shorter than expected".to_owned(),
+            "XR18 main meter blob is shorter than expected".to_owned(),
         ));
     }
 
-    let mut mains = [0.0f32; 16];
-    for i in 0..6 {
-        mains[i] = f32::from_le_bytes(floats[i * 4..i * 4 + 4].try_into().map_err(|_| {
-            ProbeError::Protocol(format!("main meter {i} float slice size mismatch"))
-        })?);
-    }
+    let read = |index: usize| {
+        let bytes: [u8; 2] = blob[index * 2..index * 2 + 2].try_into().map_err(|_| {
+            ProbeError::Protocol(format!("XR18 main meter int16 {index} slice size mismatch"))
+        })?;
+        Ok(int16_db_to_linear(i16::from_le_bytes(bytes)))
+    };
 
     Ok(MainMeterLevels {
-        mains,
-        main_lr: [
-            f32::from_le_bytes(floats[6 * 4..6 * 4 + 4].try_into().map_err(|_| {
-                ProbeError::Protocol("main L meter float slice size mismatch".to_owned())
-            })?),
-            f32::from_le_bytes(floats[7 * 4..7 * 4 + 4].try_into().map_err(|_| {
-                ProbeError::Protocol("main R meter float slice size mismatch".to_owned())
-            })?),
-        ],
+        mains: [0.0f32; 16],
+        main_lr: [read(18)?, read(19)?],
         matrices: [0.0f32; 6],
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::osc_string;
+
+    fn xr18_meters_packet(values: &[i16]) -> Vec<u8> {
+        let mut packet = osc_string("/meters/1");
+        packet.extend_from_slice(b",b\0\0");
+        packet.extend_from_slice(&(values.len() as u32 * 2).to_be_bytes());
+        for value in values {
+            packet.extend_from_slice(&value.to_le_bytes());
+        }
+        while !packet.len().is_multiple_of(4) {
+            packet.push(0);
+        }
+        packet
+    }
+
+    #[test]
+    fn parses_xr18_input_meters() {
+        let mut values = [i16::MIN; 20];
+        values[0] = 0; // 0 dB (clipping)
+        values[1] = -5120; // -20 dB
+        values[15] = -2560; // -10 dB
+        let packet = xr18_meters_packet(&values);
+
+        let meters = parse_input_meter_packet(&packet).expect("should parse XR18 input meters");
+        assert_eq!(meters.len(), 16);
+        assert_eq!(meters[0].target, FaderTarget::Channel(1));
+        assert!((meters[0].level_linear - 1.0).abs() < f32::EPSILON);
+        assert_eq!(meters[1].target, FaderTarget::Channel(2));
+        assert!((meters[1].level_linear - 0.1).abs() < 0.001);
+        assert_eq!(meters[15].target, FaderTarget::Channel(16));
+        assert!((meters[15].level_linear - 0.316_227_76).abs() < 0.001);
+    }
+
+    #[test]
+    fn parses_xr18_main_meters() {
+        let mut values = [i16::MIN; 20];
+        values[18] = -2560; // main L -10 dB
+        values[19] = -5120; // main R -20 dB
+        let packet = xr18_meters_packet(&values);
+
+        let levels = parse_main_meter_packet(&packet).expect("should parse XR18 main meters");
+        assert!((levels.main_lr[0] - 0.316_227_76).abs() < 0.001);
+        assert!((levels.main_lr[1] - 0.1).abs() < 0.001);
+    }
+
+    #[test]
+    fn rejects_wrong_xr18_meter_path() {
+        let packet = osc_string("/meters/2");
+        assert!(parse_input_meter_packet(&packet).is_err());
+    }
 }

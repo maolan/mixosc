@@ -12,6 +12,7 @@ const INFO_REQUEST: &[u8] = b"/info\0\0\0,\0\0\0";
 const STATUS_REQUEST: &[u8] = b"/status\0,\0\0\0";
 const XINFO_REQUEST: &[u8] = b"/xinfo\0\0,\0\0\0";
 pub const XREMOTE_REQUEST: &[u8] = b"/xremote\0\0\0,\0\0\0";
+pub const XREMOTENFB_REQUEST: &[u8] = b"/xremotenfb\0";
 const XINFO_RESPONSE: &str = "/xinfo";
 const INFO_RESPONSE: &str = "/info";
 const STATUS_RESPONSE: &str = "/status";
@@ -25,9 +26,9 @@ pub(crate) const SOLO_RESPONSE_PREFIX: &str = "/-stat/solosw/";
 pub(crate) const NAME_RESPONSE_SUFFIX: &str = "/config/name";
 pub(crate) const COLOR_RESPONSE_SUFFIX: &str = "/config/color";
 pub(crate) const INPUT_METERS_REQUEST: &str = "/meters/0";
-pub(crate) const INPUT_METERS_ALIAS: &str = "meters/0";
+pub(crate) const INPUT_METERS_ALIAS: &str = "/meters/0";
 pub(crate) const MAIN_METERS_REQUEST: &str = "/meters/2";
-pub(crate) const MAIN_METERS_ALIAS: &str = "meters/2";
+pub(crate) const MAIN_METERS_ALIAS: &str = "/meters/2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum MixerModel {
@@ -109,7 +110,6 @@ impl DiscoveryProbe {
             .set_write_timeout(Some(self.timeout))
             .map_err(ProbeError::Configure)?;
 
-        // Send to both X32 and X-Air broadcast ports
         let _ = socket.send_to(XINFO_REQUEST, X32_BROADCAST_ADDR);
         let _ = socket.send_to(XINFO_REQUEST, XR18_BROADCAST_ADDR);
 
@@ -191,14 +191,12 @@ impl ConnectionProbe {
 
         let mut buffer = [0_u8; 2048];
 
-        // Try the requested target first
         match self.try_target(&socket, self.target, &mut buffer) {
             Ok(outcome @ ProbeOutcome::Connected { .. }) => return Ok(outcome),
             Ok(ProbeOutcome::Disconnected) => {}
             Err(error) => return Err(error),
         }
 
-        // If disconnected, try the fallback port (10023 <-> 10024)
         let fallback = fallback_addr(self.target);
         if let Some(fallback) = fallback {
             match self.try_target(&socket, fallback, &mut buffer) {
@@ -1531,7 +1529,7 @@ pub fn osc_address(packet: &[u8]) -> Option<&str> {
     std::str::from_utf8(&packet[..end]).ok()
 }
 
-fn osc_meter_group_request(meter_id: &str) -> Vec<u8> {
+pub fn osc_meter_group_request(meter_id: &str) -> Vec<u8> {
     let mut packet = osc_string("/meters");
     packet.extend_from_slice(b",s\0\0");
     packet.extend_from_slice(&osc_string(meter_id));
@@ -1698,7 +1696,7 @@ fn parse_headamp_index_value(packet: &[u8]) -> Option<(String, i32)> {
 
 fn parse_send_value(packet: &[u8]) -> Option<(String, f32)> {
     let (path, value) = parse_float_value(packet, "/level")?;
-    // target_and_bus_from_send_path is model-specific; just verify it looks like a send path
+
     if !path.contains("/mix/") || !path.ends_with("/level") {
         return None;
     }

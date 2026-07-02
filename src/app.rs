@@ -4,9 +4,9 @@ use crate::{
     FaderBankProbe, FaderTarget, GainBankProbe, GainSource, MainMeterLevels, MixerModel,
     MuteBankProbe, NameBankProbe, PanBankProbe, ProbeOutcome, ProbeResponse, SendBankProbe,
     SoloBankProbe, StripColor, StripFader, StripGain, StripMeter, StripMute, StripName, StripPan,
-    StripSend, StripSolo, XREMOTE_REQUEST, batchsubscribe_meter_request, parse_console_update,
-    parse_input_meter_packet, parse_main_meter_packet, parse_rta_meter_packet, parse_target,
-    renew_request,
+    StripSend, StripSolo, XREMOTE_REQUEST, XREMOTENFB_REQUEST, batchsubscribe_meter_request,
+    osc_meter_group_request, parse_console_update, parse_input_meter_packet,
+    parse_main_meter_packet, parse_rta_meter_packet, parse_target, renew_request,
 };
 use iced::futures::sink::SinkExt;
 use iced::futures::{StreamExt, channel::mpsc, stream::BoxStream};
@@ -189,6 +189,18 @@ pub struct MixOscApp {
     discovered_mixers: Vec<DiscoveredMixer>,
     manual_target: bool,
     discovery_in_flight: bool,
+}
+
+impl Default for MixOscApp {
+    fn default() -> Self {
+        Self {
+            mixers: vec![StatusApp::default()],
+            active_mixer: 0,
+            discovered_mixers: Vec::new(),
+            manual_target: false,
+            discovery_in_flight: false,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1387,7 +1399,9 @@ pub fn subscription(app: &MixOscApp) -> Subscription<Message> {
             subs.push(state_subscription(addr, mixer.mixer_model, index));
             subs.push(meter_subscription(addr, mixer.mixer_model, index));
             subs.push(master_meter_subscription(addr, mixer.mixer_model, index));
-            subs.push(rta_meter_subscription(addr, mixer.mixer_model, index));
+            if mixer.mixer_model == MixerModel::X32 {
+                subs.push(rta_meter_subscription(addr, mixer.mixer_model, index));
+            }
         }
     }
 
@@ -1636,7 +1650,6 @@ pub struct NavTab {
 }
 
 fn spill_bar(app: &StatusApp) -> Element<'static, Message> {
-    // Mute group toggle buttons
     let mute_count = app.config().mute_group_count;
     let mute_buttons: Element<'_, Message> = (1..=mute_count)
         .fold(row!().spacing(4), |row, grp| {
@@ -1673,7 +1686,6 @@ fn spill_bar(app: &StatusApp) -> Element<'static, Message> {
         })
         .into();
 
-    // Spill indicator buttons (shown when DCA spill is active)
     let dca_count = app.config().dca_count;
     let spill_buttons: Element<'_, Message> = if let Some(dca) = app.dca_spill {
         (1..=dca_count)
@@ -1741,7 +1753,6 @@ fn spill_bar(app: &StatusApp) -> Element<'static, Message> {
             Space::new().width(Length::Fixed(0.0)).into()
         };
 
-    // DCA spill buttons (only visible when no spill is active)
     let dca_count = app.config().dca_count;
     let dca_buttons: Element<'_, Message> = if app.dca_spill.is_none() && app.mute_spill.is_none() {
         (1..=dca_count)
@@ -2380,7 +2391,7 @@ fn spawn_copy_paste(
             }
             let probe =
                 crate::ParameterProbe::new(mixer_addr).with_timeout(Duration::from_millis(1000));
-            // Save source to temporary preset slot 99
+
             probe
                 .set_multi(
                     "/save",
@@ -2392,7 +2403,7 @@ fn spawn_copy_paste(
                     ],
                 )
                 .map_err(|e| e.to_string())?;
-            // Load preset slot 99 to destination
+
             probe
                 .set_multi(
                     "/load",
@@ -3933,7 +3944,6 @@ fn config_detail_panel_for_base<'a>(
 ) -> Element<'a, Message> {
     let mut panels = row!().spacing(8);
 
-    // Preamp section
     match target {
         FaderTarget::Channel(_) | FaderTarget::Aux(_) => {
             let trim = param_float(app, &format!("{base}/preamp/trim"));
@@ -4007,7 +4017,6 @@ fn config_detail_panel_for_base<'a>(
         _ => {}
     }
 
-    // Delay section
     if matches!(target, FaderTarget::Channel(_) | FaderTarget::Aux(_)) {
         let delay_on = param_bool(app, &format!("{base}/delay/on"));
         let delay_time = param_float(app, &format!("{base}/delay/time"));
@@ -4023,7 +4032,6 @@ fn config_detail_panel_for_base<'a>(
         ));
     }
 
-    // Insert section
     if matches!(
         target,
         FaderTarget::Channel(_) | FaderTarget::Bus(_) | FaderTarget::Mtx(_) | FaderTarget::Main
@@ -4048,7 +4056,6 @@ fn config_detail_panel_for_base<'a>(
         panels = panels.push(detail_panel(title, insert_col));
     }
 
-    // Main Mono insert (X32 only)
     if app.mixer_model == MixerModel::X32 && target == FaderTarget::Main {
         let insert_on = param_bool(app, "/main/m/insert/on");
         let insert_pos = param_bool(app, "/main/m/insert/pos");
@@ -4065,7 +4072,6 @@ fn config_detail_panel_for_base<'a>(
         panels = panels.push(detail_panel("Insert M", insert_col));
     }
 
-    // Phantom power for channels
     if let FaderTarget::Channel(ch) = target {
         let headamp_index = match app.gain_sources[strip_index] {
             GainSource::Headamp(idx) => idx,
@@ -4083,7 +4089,6 @@ fn config_detail_panel_for_base<'a>(
         ));
     }
 
-    // Color / Icon
     if !matches!(target, FaderTarget::Main) {
         let color_path = format!("{base}/config/color");
         let color_val = match app.parameter_values.get(&color_path) {
@@ -4108,7 +4113,6 @@ fn config_detail_panel_for_base<'a>(
         panels = panels.push(detail_panel("Appearance", color_icon_col));
     }
 
-    // DCA / Mute groups
     if matches!(
         target,
         FaderTarget::Channel(_) | FaderTarget::Aux(_) | FaderTarget::FxRtn(_) | FaderTarget::Bus(_)
@@ -4119,7 +4123,6 @@ fn config_detail_panel_for_base<'a>(
         ));
     }
 
-    // Automix (channels 1-8 only)
     if let FaderTarget::Channel(ch) = target
         && ch <= 8
     {
@@ -4150,7 +4153,6 @@ fn config_detail_panel_for_base<'a>(
         ));
     }
 
-    // Copy / Paste
     let copy_paste_col = column![
         button(text("Copy").size(10))
             .on_press(Message::CopyStrip(strip_index))
@@ -4226,7 +4228,7 @@ fn gate_detail_panel(app: &StatusApp) -> Element<'_, Message> {
 
     let mode = match app.parameter_values.get(&format!("{base}/gate/mode")) {
         Some(OscValue::Int(v)) => *v,
-        _ => 3, // default GATE
+        _ => 3,
     };
     let auto = param_bool(app, &format!("{base}/gate/auto"));
     let keysrc = match app.parameter_values.get(&format!("{base}/gate/keysrc")) {
@@ -4598,7 +4600,6 @@ fn sends_detail_panel(app: &StatusApp) -> Element<'_, Message> {
 
     let mut panels = row!().spacing(8);
 
-    // Send grid
     if !sends.is_empty() {
         let send_rows: Element<'_, Message> = sends
             .chunks(4)
@@ -4675,7 +4676,6 @@ fn sends_detail_panel(app: &StatusApp) -> Element<'_, Message> {
         ));
     }
 
-    // Tap-point selectors for bus pairs
     if has_tap_types {
         let tap_count = if app.mixer_model == MixerModel::X32 {
             16
@@ -4688,7 +4688,7 @@ fn sends_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                 let type_path = format!("{base}/mix/{bus:02}/type");
                 let current_type = match app.parameter_values.get(&type_path) {
                     Some(OscValue::Int(v)) => *v,
-                    _ => 4, // default POST
+                    _ => 4,
                 };
                 col.push(tap_type_selector(bus, type_path, current_type))
             })
@@ -4699,7 +4699,6 @@ fn sends_detail_panel(app: &StatusApp) -> Element<'_, Message> {
         ));
     }
 
-    // Main LR + Mono
     if has_main_lr {
         let mut main_col = column!().spacing(8);
         if target != FaderTarget::Main {
@@ -5292,7 +5291,6 @@ fn fx_detail_panel(app: &StatusApp) -> Element<'_, Message> {
             col = col.push(text(format!("R: {source_r}")).size(10));
         }
 
-        // Show 8 parameters with effect-specific names
         let param_names = fx_param_names(fx_type);
         for par in 1..=8 {
             let par_path = format!("{base}/par/{par:02}");
@@ -5581,7 +5579,6 @@ fn scenes_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                 })
                 .into();
 
-            // Cues section
             let cues_grid: Element<'_, Message> = (0..100)
                 .fold(column!().spacing(4), |col, cue| {
                     let name_path = format!("/-show/showfile/cue/{cue:03}/name");
@@ -5679,7 +5676,6 @@ fn scenes_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                 })
                 .into();
 
-            // Snippets section
             let snippets_grid: Element<'_, Message> = (0..100)
                 .fold(column!().spacing(4), |col, snip| {
                     let name_path = format!("/-show/showfile/snippet/{snip:03}/name");
@@ -5984,7 +5980,6 @@ fn scenes_detail_panel(app: &StatusApp) -> Element<'_, Message> {
 fn setup_detail_panel(app: &StatusApp) -> Element<'_, Message> {
     let mut panels = row!().spacing(8);
 
-    // Talkback
     let talk_enable = param_bool(app, "/config/talk/enable");
     let talk_source = match app.parameter_values.get("/config/talk/source") {
         Some(OscValue::Int(v)) => *v,
@@ -6110,7 +6105,6 @@ fn setup_detail_panel(app: &StatusApp) -> Element<'_, Message> {
     .spacing(5);
     panels = panels.push(detail_panel("Talkback", talk_col));
 
-    // Oscillator
     let osc_type = match app.parameter_values.get("/config/osc/type") {
         Some(OscValue::Int(v)) => *v,
         _ => 0,
@@ -6158,7 +6152,6 @@ fn setup_detail_panel(app: &StatusApp) -> Element<'_, Message> {
     .spacing(6);
     panels = panels.push(detail_panel("Oscillator", osc_col));
 
-    // Solo / Monitor
     let solo_level = param_float(app, "/config/solo/level");
     let solo_source = match app.parameter_values.get("/config/solo/source") {
         Some(OscValue::Int(v)) => *v,
@@ -6276,7 +6269,6 @@ fn setup_detail_panel(app: &StatusApp) -> Element<'_, Message> {
     .spacing(4);
     panels = panels.push(detail_panel("Solo / Mon", solo_col));
 
-    // Sends on Fader
     let sends_on_fader = param_bool(app, "/-stat/sends on fader");
     let sof_col = column![param_toggle(
         "Sends on Fdr",
@@ -6286,7 +6278,6 @@ fn setup_detail_panel(app: &StatusApp) -> Element<'_, Message> {
     .spacing(6);
     panels = panels.push(detail_panel("Sends on Fdr", sof_col));
 
-    // GEQ on Faders
     let geq_on_fader = param_bool(app, "/-stat/geqonfdr");
     let geq_pos = match app.parameter_values.get("/-stat/geqpos") {
         Some(OscValue::Int(v)) => *v,
@@ -6308,7 +6299,6 @@ fn setup_detail_panel(app: &StatusApp) -> Element<'_, Message> {
     .spacing(6);
     panels = panels.push(detail_panel("GEQ", geq_col));
 
-    // Recorder
     let rec_state = match app.parameter_values.get("/-stat/urec/state") {
         Some(OscValue::Int(v)) => *v,
         _ => 0,
@@ -6401,7 +6391,6 @@ fn setup_detail_panel(app: &StatusApp) -> Element<'_, Message> {
     .spacing(6);
     panels = panels.push(detail_panel("Recorder", rec_col));
 
-    // Mono Link
     let mono_link = param_bool(app, "/config/mono/link");
     let mono_col = column![param_toggle(
         "Mono Link",
@@ -6411,7 +6400,6 @@ fn setup_detail_panel(app: &StatusApp) -> Element<'_, Message> {
     .spacing(6);
     panels = panels.push(detail_panel("Mono Link", mono_col));
 
-    // Network / Clock
     let ip_dhcp = param_bool(app, "/-prefs/ip/dhcp");
     let clock_source = match app.parameter_values.get("/-prefs/clocksource") {
         Some(OscValue::Int(v)) => *v,
@@ -6449,7 +6437,6 @@ fn setup_detail_panel(app: &StatusApp) -> Element<'_, Message> {
     .spacing(6);
     panels = panels.push(detail_panel("Network", net_col));
 
-    // Tape / USB
     let tape_autoplay = param_bool(app, "/config/tape/autoplay");
     let tape_col = column![param_toggle(
         "Autoplay",
@@ -6459,7 +6446,6 @@ fn setup_detail_panel(app: &StatusApp) -> Element<'_, Message> {
     .spacing(6);
     panels = panels.push(detail_panel("Tape", tape_col));
 
-    // Preferences
     let bright = param_float(app, "/-prefs/bright");
     let lcdcont = param_float(app, "/-prefs/lcdcont");
     let ledbright = param_float(app, "/-prefs/ledbright");
@@ -6609,7 +6595,6 @@ fn setup_detail_panel(app: &StatusApp) -> Element<'_, Message> {
         scrollable(prefs_col).height(Length::Fixed(220.0)),
     ));
 
-    // User Assign
     let user_assign_col = ["A", "B", "C"]
         .iter()
         .fold(column!().spacing(6), |col, layer| {
@@ -6678,7 +6663,6 @@ fn setup_detail_panel(app: &StatusApp) -> Element<'_, Message> {
 fn routing_detail_panel(app: &StatusApp) -> Element<'_, Message> {
     let mut panels = row!().spacing(8);
 
-    // Channel linking
     let chlink_col: Element<'_, Message> = (1..=16)
         .fold(column!().spacing(3), |col, n| {
             let path = format!("/config/chlink/{n:02}");
@@ -6732,7 +6716,6 @@ fn routing_detail_panel(app: &StatusApp) -> Element<'_, Message> {
         .into();
     panels = panels.push(detail_panel("Ch Link", chlink_col));
 
-    // Bus / FX / Mtx / Aux linking
     let mut link_col = column!().spacing(3);
     for n in 1..=4 {
         let path = format!("/config/auxlink/{n:02}");
@@ -6932,7 +6915,6 @@ fn routing_detail_panel(app: &StatusApp) -> Element<'_, Message> {
     }
     panels = panels.push(detail_panel("Bus/FX/Mtx", link_col));
 
-    // Link config
     let linkcfg_hadly = param_bool(app, "/config/linkcfg/hadly");
     let linkcfg_eq = param_bool(app, "/config/linkcfg/eq");
     let linkcfg_dyn = param_bool(app, "/config/linkcfg/dyn");
@@ -6951,7 +6933,6 @@ fn routing_detail_panel(app: &StatusApp) -> Element<'_, Message> {
     .spacing(6);
     panels = panels.push(detail_panel("Link Cfg", linkcfg_col));
 
-    // Channel source routing
     let src_col: Element<'_, Message> = (1..=32)
         .fold(column!().spacing(3), |col, ch| {
             let path = format!("/ch/{ch:02}/config/source");
@@ -6980,7 +6961,6 @@ fn routing_detail_panel(app: &StatusApp) -> Element<'_, Message> {
         scrollable(src_col).height(Length::Fixed(200.0)),
     ));
 
-    // Aux In source routing (X32 only)
     if app.mixer_model == MixerModel::X32 {
         let aux_in_src_col: Element<'_, Message> = (1..=8)
             .fold(column!().spacing(3), |col, n| {
@@ -7010,7 +6990,6 @@ fn routing_detail_panel(app: &StatusApp) -> Element<'_, Message> {
         ));
     }
 
-    // Output Routing - individual source selectors
     let out_routing_col: Element<'_, Message> = [
         ("/config/routing/OUT/1-4", 1u8),
         ("/config/routing/OUT/5-8", 5u8),
@@ -7059,7 +7038,6 @@ fn routing_detail_panel(app: &StatusApp) -> Element<'_, Message> {
         scrollable(out_routing_col).height(Length::Fixed(200.0)),
     ));
 
-    // Output Delay
     let out_delay_col: Element<'_, Message> = (1..=16)
         .fold(column!().spacing(2), |col, out| {
             let on_path = format!("/outputs/main/{out:02}/delay/on");
@@ -7117,7 +7095,6 @@ fn routing_detail_panel(app: &StatusApp) -> Element<'_, Message> {
         scrollable(out_delay_col).height(Length::Fixed(200.0)),
     ));
 
-    // Output Source Patching
     let output_src_name = |src: i32| -> &'static str {
         match src {
             0 => "OFF",
@@ -7844,25 +7821,30 @@ fn state_worker(
                 }
             };
 
-            if let Err(error) = socket.send_to(XREMOTE_REQUEST, mixer_addr).await {
+            let (keepalive_request, keepalive_interval) = match model {
+                MixerModel::X32 => (XREMOTE_REQUEST, Duration::from_secs(5)),
+                MixerModel::XR18 => (XREMOTENFB_REQUEST, Duration::from_secs(3)),
+            };
+
+            if let Err(error) = socket.send_to(keepalive_request, mixer_addr).await {
                 let _ = output
-                    .send(Err(format!("failed to send /xremote: {error}")))
+                    .send(Err(format!("failed to send keepalive: {error}")))
                     .await;
                 return;
             }
 
-            let mut last_xremote = Instant::now();
+            let mut last_keepalive = Instant::now();
             let mut buffer = [0_u8; 4096];
 
             loop {
-                if last_xremote.elapsed() >= Duration::from_secs(5) {
-                    if let Err(error) = socket.send_to(XREMOTE_REQUEST, mixer_addr).await {
+                if last_keepalive.elapsed() >= keepalive_interval {
+                    if let Err(error) = socket.send_to(keepalive_request, mixer_addr).await {
                         let _ = output
-                            .send(Err(format!("failed to renew /xremote: {error}")))
+                            .send(Err(format!("failed to renew keepalive: {error}")))
                             .await;
                         return;
                     }
-                    last_xremote = Instant::now();
+                    last_keepalive = Instant::now();
                 }
 
                 match tokio::time::timeout(
@@ -7906,46 +7888,86 @@ fn meter_worker(
                 }
             };
 
-            let subscribe = batchsubscribe_meter_request("meters/0", "/meters/0", 0, 0, 1);
-            if let Err(error) = socket.send_to(XREMOTE_REQUEST, mixer_addr).await {
+            let (keepalive_request, subscribe, renew) = match model {
+                MixerModel::X32 => (
+                    XREMOTE_REQUEST,
+                    batchsubscribe_meter_request("/meters/0", "/meters/0", 0, 0, 1),
+                    Some(renew_request("/meters/0")),
+                ),
+                MixerModel::XR18 => (
+                    XREMOTENFB_REQUEST,
+                    osc_meter_group_request("/meters/1"),
+                    None,
+                ),
+            };
+            let keepalive_interval = match model {
+                MixerModel::X32 => Duration::from_secs(5),
+                MixerModel::XR18 => Duration::from_secs(3),
+            };
+
+            if model == MixerModel::XR18 {
+                if let Err(error) = socket.send_to(b"/info\0\0\0", mixer_addr).await {
+                    let _ = output
+                        .send(Err(format!("failed to send /info handshake: {error}")))
+                        .await;
+                    return;
+                }
+                let mut handshake_buffer = [0_u8; 512];
+                let _ = tokio::time::timeout(
+                    Duration::from_millis(500),
+                    socket.recv_from(&mut handshake_buffer),
+                )
+                .await;
+            }
+
+            if let Err(error) = socket.send_to(keepalive_request, mixer_addr).await {
                 let _ = output
-                    .send(Err(format!("failed to send /xremote: {error}")))
+                    .send(Err(format!("failed to send keepalive: {error}")))
                     .await;
                 return;
             }
             if let Err(error) = socket.send_to(&subscribe, mixer_addr).await {
                 let _ = output
                     .send(Err(format!(
-                        "failed to send /batchsubscribe for meters/0: {error}"
+                        "failed to send meter subscription for {model:?}: {error}"
                     )))
                     .await;
                 return;
             }
 
-            let renew = renew_request("meters/0");
-            let mut last_xremote = Instant::now();
-            let mut last_renew = Instant::now();
+            let mut last_keepalive = Instant::now();
+            let mut last_renew = renew.as_ref().map(|_| Instant::now());
             let mut buffer = [0_u8; 4096];
 
             loop {
-                if last_xremote.elapsed() >= Duration::from_secs(5) {
-                    if let Err(error) = socket.send_to(XREMOTE_REQUEST, mixer_addr).await {
+                if last_keepalive.elapsed() >= keepalive_interval {
+                    if let Err(error) = socket.send_to(keepalive_request, mixer_addr).await {
                         let _ = output
-                            .send(Err(format!("failed to renew /xremote: {error}")))
+                            .send(Err(format!("failed to renew keepalive: {error}")))
                             .await;
                         return;
                     }
-                    last_xremote = Instant::now();
+                    if let Err(error) = socket.send_to(&subscribe, mixer_addr).await {
+                        let _ = output
+                            .send(Err(format!(
+                                "failed to resend meter subscription for {model:?}: {error}"
+                            )))
+                            .await;
+                        return;
+                    }
+                    last_keepalive = Instant::now();
                 }
 
-                if last_renew.elapsed() >= Duration::from_secs(5) {
-                    if let Err(error) = socket.send_to(&renew, mixer_addr).await {
+                if let Some(ref renew_request) = renew
+                    && last_renew.as_ref().unwrap().elapsed() >= Duration::from_secs(5)
+                {
+                    if let Err(error) = socket.send_to(renew_request, mixer_addr).await {
                         let _ = output
                             .send(Err(format!("failed to renew meter subscription: {error}")))
                             .await;
                         return;
                     }
-                    last_renew = Instant::now();
+                    last_renew = Some(Instant::now());
                 }
 
                 match tokio::time::timeout(
@@ -7991,37 +8013,88 @@ fn master_meter_worker(
                 }
             };
 
-            let subscribe = batchsubscribe_meter_request("meters/2", "/meters/2", 0, 0, 1);
-            if let Err(error) = socket.send_to(XREMOTE_REQUEST, mixer_addr).await {
+            let (keepalive_request, subscribe, renew) = match model {
+                MixerModel::X32 => (
+                    XREMOTE_REQUEST,
+                    batchsubscribe_meter_request("/meters/2", "/meters/2", 0, 0, 1),
+                    Some(renew_request("/meters/2")),
+                ),
+                MixerModel::XR18 => (
+                    XREMOTENFB_REQUEST,
+                    osc_meter_group_request("/meters/1"),
+                    None,
+                ),
+            };
+            let keepalive_interval = match model {
+                MixerModel::X32 => Duration::from_secs(5),
+                MixerModel::XR18 => Duration::from_secs(3),
+            };
+
+            if model == MixerModel::XR18 {
+                if let Err(error) = socket.send_to(b"/info\0\0\0", mixer_addr).await {
+                    let _ = output
+                        .send(Err(format!("failed to send /info handshake: {error}")))
+                        .await;
+                    return;
+                }
+                let mut handshake_buffer = [0_u8; 512];
+                let _ = tokio::time::timeout(
+                    Duration::from_millis(500),
+                    socket.recv_from(&mut handshake_buffer),
+                )
+                .await;
+            }
+
+            if let Err(error) = socket.send_to(keepalive_request, mixer_addr).await {
                 let _ = output
-                    .send(Err(format!("failed to send /xremote: {error}")))
+                    .send(Err(format!("failed to send keepalive: {error}")))
                     .await;
                 return;
             }
             if let Err(error) = socket.send_to(&subscribe, mixer_addr).await {
                 let _ = output
                     .send(Err(format!(
-                        "failed to send /batchsubscribe for meters/2: {error}"
+                        "failed to send main meter subscription for {model:?}: {error}"
                     )))
                     .await;
                 return;
             }
 
-            let mut last_renew = Instant::now();
+            let mut last_keepalive = Instant::now();
+            let mut last_renew = renew.as_ref().map(|_| Instant::now());
             let mut buffer = [0_u8; 4096];
 
             loop {
-                if last_renew.elapsed() >= Duration::from_secs(5) {
-                    let renew = renew_request("meters/2");
-                    if let Err(error) = socket.send_to(&renew, mixer_addr).await {
+                if last_keepalive.elapsed() >= keepalive_interval {
+                    if let Err(error) = socket.send_to(keepalive_request, mixer_addr).await {
+                        let _ = output
+                            .send(Err(format!("failed to renew keepalive: {error}")))
+                            .await;
+                        return;
+                    }
+                    if let Err(error) = socket.send_to(&subscribe, mixer_addr).await {
                         let _ = output
                             .send(Err(format!(
-                                "failed to renew meter stream meters/2: {error}"
+                                "failed to resend main meter subscription for {model:?}: {error}"
                             )))
                             .await;
                         return;
                     }
-                    last_renew = Instant::now();
+                    last_keepalive = Instant::now();
+                }
+
+                if let Some(ref renew_request) = renew
+                    && last_renew.as_ref().unwrap().elapsed() >= Duration::from_secs(5)
+                {
+                    if let Err(error) = socket.send_to(renew_request, mixer_addr).await {
+                        let _ = output
+                            .send(Err(format!(
+                                "failed to renew main meter subscription: {error}"
+                            )))
+                            .await;
+                        return;
+                    }
+                    last_renew = Some(Instant::now());
                 }
 
                 match tokio::time::timeout(
@@ -8069,7 +8142,7 @@ fn rta_meter_worker(
                 }
             };
 
-            let subscribe = batchsubscribe_meter_request("meters/15", "/meters/15", 0, 0, 1);
+            let subscribe = batchsubscribe_meter_request("/meters/15", "/meters/15", 0, 0, 1);
             if let Err(error) = socket.send_to(XREMOTE_REQUEST, mixer_addr).await {
                 let _ = output
                     .send(Err(format!("failed to send /xremote: {error}")))
@@ -8079,7 +8152,7 @@ fn rta_meter_worker(
             if let Err(error) = socket.send_to(&subscribe, mixer_addr).await {
                 let _ = output
                     .send(Err(format!(
-                        "failed to send /batchsubscribe for meters/15: {error}"
+                        "failed to send /batchsubscribe for /meters/15: {error}"
                     )))
                     .await;
                 return;
@@ -8090,11 +8163,11 @@ fn rta_meter_worker(
 
             loop {
                 if last_renew.elapsed() >= Duration::from_secs(5) {
-                    let renew = renew_request("meters/15");
+                    let renew = renew_request("/meters/15");
                     if let Err(error) = socket.send_to(&renew, mixer_addr).await {
                         let _ = output
                             .send(Err(format!(
-                                "failed to renew meter stream meters/15: {error}"
+                                "failed to renew meter stream /meters/15: {error}"
                             )))
                             .await;
                         return;
