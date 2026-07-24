@@ -268,10 +268,9 @@ fn target_and_bus_from_send_path(path: &str) -> Option<(FaderTarget, u8)> {
     } else if let Some(rest) = path.strip_prefix("/rtn/") {
         let (fx, rest) = rest.split_once('/')?;
         (FaderTarget::FxRtn(fx.parse::<u8>().ok()?), rest)
-    } else if let Some(rest) = path.strip_prefix("/lr/") {
-        (FaderTarget::Main, rest)
     } else {
-        return None;
+        let rest = path.strip_prefix("/lr/")?;
+        (FaderTarget::Main, rest)
     };
 
     let rest = rest.strip_prefix("mix/")?;

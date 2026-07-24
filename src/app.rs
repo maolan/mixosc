@@ -11,8 +11,15 @@ use crate::{
 use iced::futures::sink::SinkExt;
 use iced::futures::{StreamExt, channel::mpsc, stream::BoxStream};
 use iced::stream;
-use iced::widget::{Space, button, column, container, row, scrollable, text, text_input};
-use iced::{Background, Border, Color, Element, Fill, Length, Subscription, Task, Theme, time};
+use iced::widget::{
+    Space, button, canvas,
+    canvas::{Geometry, Path, Text},
+    column, container, row, scrollable, text, text_input,
+};
+use iced::{
+    Background, Border, Color, Element, Fill, Length, Point, Rectangle, Renderer, Subscription,
+    Task, Theme, mouse, time,
+};
 use iced_fonts::lucide::{
     activity, audio_lines, audio_waveform, equal, file_input, git_merge, panel_left, save, send,
     settings, shield, sliders_vertical, toggle_left,
@@ -20,7 +27,6 @@ use iced_fonts::lucide::{
 use maolan_widgets::horizontal_slider::horizontal_slider;
 use maolan_widgets::meters::meters;
 use maolan_widgets::slider::slider as vertical_slider;
-use maolan_widgets::ticks::meter_ticks;
 use std::env;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -30,6 +36,77 @@ use tokio::time::{Instant, sleep};
 const MAX_STRIP_COUNT: usize = 74;
 const MAX_SEND_BUS_COUNT: usize = 16;
 const STRIP_METER_HEIGHT: f32 = 260.0;
+const FADER_SCALE_WIDTH: f32 = 22.0;
+const FADER_SCALE_GAP: f32 = 3.0;
+const FADER_SCALE_OUTER_PAD_Y: f32 = 7.0;
+
+#[derive(Clone, Copy)]
+struct FaderTicks;
+
+impl FaderTicks {
+    const VALUES: [f32; 9] = [-50.0, -40.0, -30.0, -20.0, -10.0, -5.0, 0.0, 5.0, 10.0];
+
+    fn label(db: f32) -> String {
+        if db == 0.0 {
+            "0".to_owned()
+        } else {
+            format!("{db:+.0}")
+        }
+    }
+}
+
+impl<Message> canvas::Program<Message> for FaderTicks {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        if bounds.width <= 0.0 || bounds.height <= 0.0 {
+            return vec![];
+        }
+
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let effective_height = (bounds.height - FADER_SCALE_OUTER_PAD_Y * 2.0).max(1.0);
+        let tick_x = FADER_SCALE_GAP;
+
+        for db in Self::VALUES {
+            let normalized = x32_fader_normalized_for_db(db);
+            let y = effective_height * (1.0 - normalized);
+            let label_y = (y - 4.0).clamp(0.0, (effective_height - 10.0).max(0.0));
+            frame.fill(
+                &Path::rectangle(
+                    Point::new(tick_x, FADER_SCALE_OUTER_PAD_Y + label_y + 4.0),
+                    iced::Size::new(4.0, 1.0),
+                ),
+                Color::from_rgba(0.62, 0.67, 0.77, 0.78),
+            );
+            frame.fill_text(Text {
+                content: Self::label(db),
+                position: Point::new(tick_x + 6.0, FADER_SCALE_OUTER_PAD_Y + label_y),
+                color: Color::from_rgba(0.9, 0.92, 0.96, 0.9),
+                size: 8.0.into(),
+                ..Default::default()
+            });
+        }
+
+        vec![frame.into_geometry()]
+    }
+}
+
+fn fader_ticks<'a, Message>(_height: f32) -> Element<'a, Message>
+where
+    Message: 'a,
+{
+    canvas(FaderTicks)
+        .width(Length::Fixed(FADER_SCALE_GAP + FADER_SCALE_WIDTH))
+        .height(Length::Fill)
+        .into()
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct MixerConfig {
@@ -3082,7 +3159,7 @@ fn mixer_strips(app: &StatusApp) -> Element<'_, Message> {
             )
             .height(Length::Fill);
             let scale = container(
-                meter_ticks(STRIP_METER_HEIGHT)
+                fader_ticks(STRIP_METER_HEIGHT)
                     .map(|()| unreachable!("tick widget does not emit messages")),
             )
             .height(Length::Fill)
@@ -3302,7 +3379,7 @@ fn mixer_strips(app: &StatusApp) -> Element<'_, Message> {
         )
         .height(Length::Fill);
         let scale = container(
-            meter_ticks(STRIP_METER_HEIGHT)
+            fader_ticks(STRIP_METER_HEIGHT)
                 .map(|()| unreachable!("tick widget does not emit messages")),
         )
         .height(Length::Fill)
@@ -7616,6 +7693,20 @@ fn x32_fader_db(value: f32) -> f32 {
     }
 }
 
+fn x32_fader_normalized_for_db(db: f32) -> f32 {
+    let db = db.clamp(-90.0, 10.0);
+
+    if db >= -10.0 {
+        (db + 30.0) / 40.0
+    } else if db >= -30.0 {
+        (db + 50.0) / 80.0
+    } else if db >= -60.0 {
+        (db + 70.0) / 160.0
+    } else {
+        (db + 90.0) / 480.0
+    }
+}
+
 fn linear_meter_to_db(value: f32) -> f32 {
     let value = value.max(0.000_031_622_78);
     (20.0 * value.log10()).clamp(-90.0, 20.0)
@@ -8207,4 +8298,18 @@ fn rta_meter_worker(
 async fn bind_meter_socket() -> std::io::Result<UdpSocket> {
     let socket = UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], 0))).await?;
     Ok(socket)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn x32_fader_scale_inverse_matches_fader_curve() {
+        for db in [-50.0, -30.0, -10.0, -5.0, 0.0, 5.0, 10.0] {
+            let normalized = x32_fader_normalized_for_db(db);
+            assert!((x32_fader_db(normalized) - db).abs() < 0.001);
+        }
+        assert!((x32_fader_normalized_for_db(0.0) - 0.75).abs() < 0.001);
+    }
 }

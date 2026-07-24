@@ -286,10 +286,9 @@ fn target_and_bus_from_send_path(path: &str) -> Option<(FaderTarget, u8)> {
     } else if let Some(rest) = path.strip_prefix("/fxrtn/") {
         let (fx, rest) = rest.split_once('/')?;
         (FaderTarget::FxRtn(fx.parse::<u8>().ok()?), rest)
-    } else if let Some(rest) = path.strip_prefix("/main/st/") {
-        (FaderTarget::Main, rest)
     } else {
-        return None;
+        let rest = path.strip_prefix("/main/st/")?;
+        (FaderTarget::Main, rest)
     };
 
     let rest = rest.strip_prefix("mix/")?;
@@ -462,15 +461,11 @@ pub fn parse_rta_meter_packet(packet: &[u8]) -> Result<[f32; 100], ProbeError> {
 
     let mut values = [-128.0f32; 100];
     let mut idx = 0;
-    for chunk in blob.chunks_exact(4) {
+    for chunk in blob.as_chunks::<4>().0 {
         if idx >= 100 {
             break;
         }
-        let u = u32::from_le_bytes(
-            chunk
-                .try_into()
-                .map_err(|_| ProbeError::Protocol("rta meter chunk size mismatch".to_owned()))?,
-        );
+        let u = u32::from_le_bytes(*chunk);
         let low = (u & 0xFFFF) as i16;
         let high = ((u >> 16) & 0xFFFF) as i16;
         values[idx] = low as f32 / 256.0;
