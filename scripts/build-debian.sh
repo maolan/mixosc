@@ -163,11 +163,11 @@ strip "$STAGING_DIR/usr/bin/mixosc"
 chmod 755 "$STAGING_DIR/usr/bin/mixosc"
 
 # Desktop entry
-cp "$SOURCE_DIR/desktop/mixosc-linux.desktop" "$STAGING_DIR/usr/share/applications/mixosc.desktop"
+cp "$SOURCE_DIR/assets/desktop/mixosc-linux.desktop" "$STAGING_DIR/usr/share/applications/mixosc.desktop"
 chmod 644 "$STAGING_DIR/usr/share/applications/mixosc.desktop"
 
 # Icon
-cp "$SOURCE_DIR/images/mixosc.png" "$STAGING_DIR/usr/share/icons/hicolor/512x512/apps/mixosc.png"
+cp "$SOURCE_DIR/assets/images/mixosc.png" "$STAGING_DIR/usr/share/icons/hicolor/512x512/apps/mixosc.png"
 chmod 644 "$STAGING_DIR/usr/share/icons/hicolor/512x512/apps/mixosc.png"
 
 # Documentation

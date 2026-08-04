@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# build-ubuntu.sh — Build a .deb package for MixOSC on Ubuntu.
+# build-ubuntu.sh — Build a .deb package and an AppImage for MixOSC on Ubuntu.
 #
 # Usage:
 #   ./scripts/build-ubuntu.sh [OPTIONS]
 #
 # Options:
 #   -s, --source-dir DIR     Path to mixosc source directory (default: parent of this script)
-#   -o, --output-dir DIR     Where to write the .deb file (default: ./dist)
+#   -o, --output-dir DIR     Where to write the .deb and .AppImage files (default: ./dist)
 #   -v, --version VERSION    Override package version (default: read from Cargo.toml)
 #   -t, --target-dir DIR     Local target directory (useful when source is on NFS)
 #   -h, --help               Show this help message
+#
+# The script installs build dependencies via apt, installs Rust via rustup if missing,
+# builds the release binary, produces a .deb package using dpkg-deb, and builds an
+# AppImage using linuxdeploy.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_DIR="$(dirname "$SCRIPT_DIR")"
@@ -20,7 +24,7 @@ OVERRIDE_VERSION=""
 TARGET_DIR=""
 
 usage() {
-    sed -n '2,14p' "$0" | sed 's/^# //'
+    sed -n '2,16p' "$0" | sed 's/^# //'
     exit 0
 }
 
@@ -68,25 +72,28 @@ fi
 DEB_ARCH="$(dpkg --print-architecture)"
 PKG_NAME="mixosc"
 DEB_NAME="${PKG_NAME}_${PKG_VERSION}-ubuntu_${DEB_ARCH}.deb"
+APPIMAGE_NAME="${PKG_NAME}-${PKG_VERSION}-x86_64.AppImage"
 
 echo "========================================"
-echo "Building MixOSC .deb package"
+echo "Building MixOSC .deb package and AppImage"
 echo "Version: $PKG_VERSION"
 echo "Architecture: $DEB_ARCH"
 echo "Source: $SOURCE_DIR"
-echo "Output: $OUTPUT_DIR/$DEB_NAME"
+echo "Deb output: $OUTPUT_DIR/$DEB_NAME"
+echo "AppImage output: $OUTPUT_DIR/$APPIMAGE_NAME"
 echo "========================================"
 
 # ---------------------------------------------------------------------------
 # 1. Install system build dependencies
 # ---------------------------------------------------------------------------
 echo ""
-echo "[1/5] Installing build dependencies..."
+echo "[1/7] Installing build dependencies..."
 sudo apt-get update
 sudo apt-get install -y \
     pkg-config \
     build-essential \
     libxkbcommon-dev \
+    libfuse2 \
     curl \
     ca-certificates \
     git
@@ -95,7 +102,7 @@ sudo apt-get install -y \
 # 2. Install Rust if missing
 # ---------------------------------------------------------------------------
 echo ""
-echo "[2/5] Checking Rust toolchain..."
+echo "[2/7] Checking Rust toolchain..."
 if ! command -v cargo &>/dev/null; then
     echo "Rust not found. Installing via rustup..."
     export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
@@ -115,7 +122,7 @@ fi
 # 3. Build release binary
 # ---------------------------------------------------------------------------
 echo ""
-echo "[3/5] Building release binary..."
+echo "[3/7] Building release binary..."
 cd "$SOURCE_DIR"
 
 CARGO_ARGS=("--release")
@@ -146,10 +153,11 @@ echo "Build completed successfully."
 # 4. Prepare Debian package staging area
 # ---------------------------------------------------------------------------
 echo ""
-echo "[4/5] Preparing Debian package structure..."
+echo "[4/7] Preparing Debian package structure..."
 
 STAGING_DIR="$(mktemp -d)"
-trap "rm -rf '$STAGING_DIR'" EXIT
+APPDIR_BASE="$(mktemp -d)"
+trap "rm -rf '$STAGING_DIR' '$APPDIR_BASE'" EXIT
 
 mkdir -p "$STAGING_DIR/DEBIAN"
 mkdir -p "$STAGING_DIR/usr/bin"
@@ -163,11 +171,11 @@ strip "$STAGING_DIR/usr/bin/mixosc"
 chmod 755 "$STAGING_DIR/usr/bin/mixosc"
 
 # Desktop entry
-cp "$SOURCE_DIR/desktop/mixosc-linux.desktop" "$STAGING_DIR/usr/share/applications/mixosc.desktop"
+cp "$SOURCE_DIR/assets/desktop/mixosc-linux.desktop" "$STAGING_DIR/usr/share/applications/mixosc.desktop"
 chmod 644 "$STAGING_DIR/usr/share/applications/mixosc.desktop"
 
 # Icon
-cp "$SOURCE_DIR/images/mixosc.png" "$STAGING_DIR/usr/share/icons/hicolor/512x512/apps/mixosc.png"
+cp "$SOURCE_DIR/assets/images/mixosc.png" "$STAGING_DIR/usr/share/icons/hicolor/512x512/apps/mixosc.png"
 chmod 644 "$STAGING_DIR/usr/share/icons/hicolor/512x512/apps/mixosc.png"
 
 # Documentation
@@ -203,16 +211,70 @@ EOF
 # 5. Build the .deb package
 # ---------------------------------------------------------------------------
 echo ""
-echo "[5/5] Building .deb package..."
+echo "[5/7] Building .deb package..."
 mkdir -p "$OUTPUT_DIR"
 fakeroot dpkg-deb --build "$STAGING_DIR" "$OUTPUT_DIR/$DEB_NAME"
 
-# Verify the package
+# ---------------------------------------------------------------------------
+# 6. Build the AppImage
+# ---------------------------------------------------------------------------
+echo ""
+echo "[6/7] Building AppImage..."
+
+APPDIR="$APPDIR_BASE/AppDir"
+mkdir -p "$APPDIR/usr/bin"
+mkdir -p "$APPDIR/usr/share/applications"
+mkdir -p "$APPDIR/usr/share/icons/hicolor/512x512/apps"
+
+cp "$BIN_DIR/mixosc" "$APPDIR/usr/bin/"
+
+# AppImage desktop entry uses relative Exec/Icon paths
+sed 's|^Exec=/usr/bin/mixosc|Exec=mixosc|; s|^Icon=/usr/share/icons/hicolor/512x512/apps/mixosc.png|Icon=mixosc|' \
+    "$SOURCE_DIR/assets/desktop/mixosc-linux.desktop" > "$APPDIR/usr/share/applications/mixosc.desktop"
+
+cp "$SOURCE_DIR/assets/images/mixosc.png" "$APPDIR/usr/share/icons/hicolor/512x512/apps/mixosc.png"
+
+# Keep the linuxdeploy helper outside the deliverables directory.
+LINUXDEPLOY_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/maolan"
+LINUXDEPLOY="$LINUXDEPLOY_CACHE/linuxdeploy-x86_64.AppImage"
+mkdir -p "$LINUXDEPLOY_CACHE"
+if [[ ! -f "$LINUXDEPLOY" ]]; then
+    echo "Downloading linuxdeploy..."
+    curl -L -o "$LINUXDEPLOY" "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
+    chmod +x "$LINUXDEPLOY"
+fi
+
+cd "$APPDIR_BASE"
+"$LINUXDEPLOY" --appimage-extract-and-run \
+    --appdir "$APPDIR" \
+    --desktop-file "$APPDIR/usr/share/applications/mixosc.desktop" \
+    --icon-file "$APPDIR/usr/share/icons/hicolor/512x512/apps/mixosc.png" \
+    --executable "$APPDIR/usr/bin/mixosc" \
+    --output appimage
+
+# linuxdeploy/appimagetool names the file from the .desktop Name field, so
+# pick up whatever single AppImage was produced rather than hard-coding the
+# basename.
+BUILT_APPIMAGE=("$APPDIR_BASE"/*.AppImage)
+if [[ ! -f "${BUILT_APPIMAGE[0]}" ]]; then
+    echo "Error: No AppImage was produced in $APPDIR_BASE" >&2
+    exit 1
+fi
+mv "${BUILT_APPIMAGE[0]}" "$OUTPUT_DIR/$APPIMAGE_NAME"
+chmod +x "$OUTPUT_DIR/$APPIMAGE_NAME"
+
+# ---------------------------------------------------------------------------
+# 7. Verify the outputs
+# ---------------------------------------------------------------------------
+echo ""
+echo "[7/7] Verifying outputs..."
 dpkg-deb --info "$OUTPUT_DIR/$DEB_NAME"
 dpkg-deb --contents "$OUTPUT_DIR/$DEB_NAME"
+ls -lh "$OUTPUT_DIR/$APPIMAGE_NAME"
 
 echo ""
 echo "========================================"
-echo "Package built successfully:"
+echo "Packages built successfully:"
 echo "  $OUTPUT_DIR/$DEB_NAME"
+echo "  $OUTPUT_DIR/$APPIMAGE_NAME"
 echo "========================================"

@@ -4,10 +4,9 @@ $ErrorActionPreference = "Stop"
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-$target    = "x86_64-pc-windows-msvc"
-$targetDir = "C:\cargo-target"
-$nsisPath  = "C:\nsis-3.10\makensis.exe"
-$staging   = "C:\maolan-staging\mixosc"
+$target   = "x86_64-pc-windows-msvc"
+$nsisPath = "C:\nsis-3.10\makensis.exe"
+$staging  = "C:\maolan-staging\mixosc"
 
 # ---------------------------------------------------------------------------
 # Version from Cargo.toml
@@ -29,7 +28,8 @@ $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Pri
 $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
     Write-Warning "This script is NOT running as Administrator."
-    Write-Warning "Some installations (VS Build Tools, NSIS to C:\) may require elevation."
+    Write-Warning "Most installations (VS Build Tools, NSIS to C:\) require elevation."
+    Write-Warning "If installs fail, run PowerShell as Administrator or execute from an RDP/VNC session."
     Write-Host ""
 }
 
@@ -48,83 +48,114 @@ function Ensure-Git {
         $env:PATH = "$env:ProgramFiles\Git\cmd;$env:PATH"
         return
     }
+    if (Test-Command "git") {
+        Write-Host "Git already installed."
+        return
+    }
     Write-Host "Installing Git..."
     $installer = "$env:TEMP\Git-installer.exe"
-    Invoke-WebRequest -Uri "https://github.com/git-for-windows/git/releases/download/v2.44.0.windows.1/Git-2.44.0-64-bit.exe" -OutFile $installer
+    if (-not (Test-Path $installer)) {
+        Invoke-WebRequest -Uri "https://github.com/git-for-windows/git/releases/download/v2.49.0.windows.1/Git-2.49.0-64-bit.exe" -OutFile $installer
+    }
     Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/NORESTART" -Wait
     $env:PATH = "$env:ProgramFiles\Git\cmd;$env:PATH"
 }
 
 function Ensure-VSBuildTools {
-    $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-    if (Test-Path $vswhere) {
-        $installPath = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-        if ($installPath) {
-            Write-Host "VS Build Tools found at $installPath"
-            return
-        }
+    $vsPath = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools"
+    if (Test-Path "$vsPath\VC\Tools\MSVC") {
+        Write-Host "VS Build Tools already installed."
+        return
     }
-    Write-Host "Installing Visual Studio Build Tools..."
-    $installer = "$env:TEMP\vs_buildtools.exe"
-    if (-not (Test-Path $installer)) {
-        Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vs_buildtools.exe" -OutFile $installer
+    Write-Host "Installing Visual Studio 2022 Build Tools (this may take several minutes)..."
+    $installer = "$env:TEMP\vs_BuildTools.exe"
+    Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vs_BuildTools.exe" -OutFile $installer
+    $proc = Start-Process -FilePath $installer -ArgumentList "--wait","--quiet","--add","Microsoft.VisualStudio.Workload.VCTools","--includeRecommended" -Wait -PassThru
+    $exit = $proc.ExitCode
+    Write-Host "VS Build Tools installer exited with code: $exit"
+    if ($exit -eq 3010) {
+        Write-Warning "A reboot is recommended after VS Build Tools installation."
+    } elseif ($exit -ne 0) {
+        Write-Error "VS Build Tools installation failed with exit code $exit"
     }
-    Start-Process -FilePath $installer -ArgumentList `
-        "--quiet","--wait","--add","Microsoft.VisualStudio.Workload.VCTools","--add","Microsoft.VisualStudio.Component.Windows11SDK.22621" `
-        -Wait
+    if (-not (Test-Path "$vsPath\VC\Tools\MSVC")) {
+        Write-Error "VS Build Tools directory not found after install. Expected: $vsPath\VC\Tools\MSVC"
+    }
 }
 
 function Import-VSEnv {
-    $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-    if (-not (Test-Path $vswhere)) { return }
-    $installPath = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-    if (-not $installPath) { return }
-    $vcvars = Join-Path $installPath "VC\Auxiliary\Build\vcvars64.bat"
-    if (-not (Test-Path $vcvars)) { return }
-    $tempFile = [System.IO.Path]::GetTempFileName()
-    cmd /c "`"$vcvars`" && set > `"$tempFile`""
-    Get-Content $tempFile | ForEach-Object {
-        if ($_ -match '^(\w+)=(.*)$') {
-            [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process')
+    $vsPath = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools"
+    $vcvars = "$vsPath\VC\Auxiliary\Build\vcvarsall.bat"
+    if (-not (Test-Path $vcvars)) {
+        Write-Error "vcvarsall.bat not found. Ensure VS Build Tools are installed."
+        return
+    }
+    Write-Host "Loading VS Build Tools environment..."
+    $cmd = "`"$vcvars`" x64 && set"
+    $envVars = cmd /c $cmd
+    foreach ($line in $envVars) {
+        if ($line -match '^(.*?)=(.*)$') {
+            $name = $matches[1]
+            $value = $matches[2]
+            [Environment]::SetEnvironmentVariable($name, $value, "Process")
         }
     }
-    Remove-Item $tempFile
-    Write-Host "Imported VS environment"
 }
 
 function Ensure-Rust {
+    $cargoPath = "$env:USERPROFILE\.cargo\bin\cargo.exe"
+    if (Test-Path $cargoPath) {
+        Write-Host "Rust already installed at $cargoPath"
+        $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+        return
+    }
     if (Test-Command "cargo") {
-        Write-Host "Rust already installed: $(cargo --version)"
+        Write-Host "Rust already installed."
         return
     }
     Write-Host "Installing Rust..."
     $installer = "$env:TEMP\rustup-init.exe"
-    Invoke-WebRequest -Uri "https://win.rustup.rs/x86_64" -OutFile $installer
-    Start-Process -FilePath $installer -ArgumentList "-y","--default-toolchain","stable" -Wait
+    if (-not (Test-Path $installer)) {
+        Invoke-WebRequest -Uri "https://win.rustup.rs/x86_64" -OutFile $installer
+    }
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $installer -y --default-toolchain stable --target $target 2>&1 | ForEach-Object { Write-Host $_ }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Rust installation failed with exit code $LASTEXITCODE"
+        }
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
     $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
 }
 
 function Ensure-NSIS {
     if (Test-Path $nsisPath) {
-        Write-Host "NSIS already installed at $nsisPath"
+        Write-Host "NSIS already installed."
         return
     }
     Write-Host "Installing NSIS..."
-    $zip = "$env:TEMP\nsis.zip"
-    Invoke-WebRequest -Uri "https://sourceforge.net/projects/nsis/files/NSIS%203/3.10/nsis-3.10.zip/download" -OutFile $zip
-    Expand-Archive -Path $zip -DestinationPath "C:\nsis-3.10-temp" -Force
-    Move-Item "C:\nsis-3.10-temp\nsis-3.10" "C:\nsis-3.10" -Force
-    Remove-Item "C:\nsis-3.10-temp" -Recurse -Force
-}
-
-# ---------------------------------------------------------------------------
-# VC++ Redistributable
-# ---------------------------------------------------------------------------
-$maolanRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
-$vcRedist = Join-Path $maolanRoot "vc_redist.x64.exe"
-if (-not (Test-Path $vcRedist)) {
-    Write-Host "Downloading VC++ Redistributable to $vcRedist..."
-    Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile $vcRedist
+    $zip = "$env:TEMP\nsis-3.10.zip"
+    $curl = "$env:SystemRoot\System32\curl.exe"
+    if (Test-Path $curl) {
+        & $curl -s -L -o $zip "https://prdownloads.sourceforge.net/nsis/nsis-3.10.zip"
+    } else {
+        Invoke-WebRequest -Uri "https://prdownloads.sourceforge.net/nsis/nsis-3.10.zip" -OutFile $zip -MaximumRedirection 5
+    }
+    Expand-Archive -Path $zip -DestinationPath "C:\" -Force
+    if (-not (Test-Path $nsisPath)) {
+        $nested = "C:\nsis-3.10\nsis-3.10"
+        if (Test-Path "$nested\makensis.exe") {
+            Move-Item -Path $nested -Destination "C:\nsis-3.10-temp" -Force
+            Remove-Item -Recurse -Force "C:\nsis-3.10" -ErrorAction SilentlyContinue
+            Rename-Item -Path "C:\nsis-3.10-temp" -NewName "nsis-3.10"
+        }
+    }
+    if (-not (Test-Path $nsisPath)) {
+        Write-Error "NSIS installation failed. Expected makensis.exe at $nsisPath"
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -137,11 +168,26 @@ Ensure-NSIS
 Ensure-Git
 
 # ---------------------------------------------------------------------------
+# VC++ Redistributable
+# ---------------------------------------------------------------------------
+$maolanRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+$vcRedist = Join-Path $maolanRoot "vc_redist.x64.exe"
+if (-not (Test-Path $vcRedist)) {
+    Write-Host "Downloading VC++ Redistributable to $vcRedist..."
+    Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile $vcRedist
+}
+
+# ---------------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------------
+$sourceDir = Split-Path $PSScriptRoot -Parent
+
+Write-Host "Cleaning old build artifacts..."
+Push-Location $sourceDir
+cargo clean
+
 Write-Host "Building mixosc (release)..."
-Push-Location (Split-Path $PSScriptRoot -Parent)
-cargo build --release --target $target --target-dir $targetDir
+cargo build --release --target $target
 Pop-Location
 
 # ---------------------------------------------------------------------------
@@ -149,93 +195,47 @@ Pop-Location
 # ---------------------------------------------------------------------------
 Write-Host "Staging files to $staging..."
 New-Item -ItemType Directory -Force $staging | Out-Null
-Copy-Item "$targetDir\$target\release\mixosc.exe" $staging -Force
+Copy-Item (Join-Path $sourceDir "target\$target\release\mixosc.exe") $staging -Force
 Copy-Item $vcRedist $staging -Force
 
 # ---------------------------------------------------------------------------
 # Installer
 # ---------------------------------------------------------------------------
 Write-Host "Building installer..."
+# NSIS can't handle UNC paths, so copy script to local temp
 $nsiTemp = "$env:TEMP\mixosc-installer"
 New-Item -ItemType Directory -Force $nsiTemp | Out-Null
-
-$installerNsi = @"
-; MixOSC Installer
-!include "MUI2.nsh"
-!include "LogicLib.nsh"
-
-Name "MixOSC"
-OutFile "mixosc-setup.exe"
-InstallDir "`$LOCALAPPDATA\MixOSC"
-RequestExecutionLevel user
-
-VIProductVersion "$pkgVersion.0"
-VIAddVersionKey "ProductName" "MixOSC"
-VIAddVersionKey "ProductVersion" "$pkgVersion"
-VIAddVersionKey "FileVersion" "$pkgVersion"
-VIAddVersionKey "FileDescription" "MixOSC - OSC Mixer Control Surface"
-VIAddVersionKey "LegalCopyright" "BSD-2-Clause"
-
-!define MUI_ABORTWARNING
-!define MUI_ICON "`${NSISDIR}\Contrib\Graphics\Icons\modern-install.ico"
-!define MUI_UNICON "`${NSISDIR}\Contrib\Graphics\Icons\modern-uninstall.ico"
-
-!insertmacro MUI_PAGE_WELCOME
-!insertmacro MUI_PAGE_DIRECTORY
-!insertmacro MUI_PAGE_INSTFILES
-!insertmacro MUI_PAGE_FINISH
-
-!insertmacro MUI_UNPAGE_WELCOME
-!insertmacro MUI_UNPAGE_CONFIRM
-!insertmacro MUI_UNPAGE_INSTFILES
-!insertmacro MUI_UNPAGE_FINISH
-
-!insertmacro MUI_LANGUAGE "English"
-
-Section "Install"
-    SetOutPath "`$INSTDIR"
-    File "$staging\*.*"
-    ExecWait '"`$INSTDIR\vc_redist.x64.exe" /install /quiet /norestart' `$0
-    Delete "`$INSTDIR\vc_redist.x64.exe"
-    WriteRegStr HKCU "Software\MixOSC" "InstallDir" `$INSTDIR
-    WriteUninstaller "`$INSTDIR\Uninstall.exe"
-    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MixOSC" "DisplayName" "MixOSC"
-    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MixOSC" "UninstallString" "`$`"`$INSTDIR\Uninstall.exe`$`""
-    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MixOSC" "DisplayVersion" "$pkgVersion"
-    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MixOSC" "Publisher" "Maolan Team"
-    WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MixOSC" "NoModify" 1
-    WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MixOSC" "NoRepair" 1
-    CreateDirectory "`$SMPROGRAMS\MixOSC"
-    CreateShortcut "`$SMPROGRAMS\MixOSC\MixOSC.lnk" "`$INSTDIR\mixosc.exe"
-    CreateShortcut "`$SMPROGRAMS\MixOSC\Uninstall.lnk" "`$INSTDIR\Uninstall.exe"
-    CreateShortcut "`$DESKTOP\MixOSC.lnk" "`$INSTDIR\mixosc.exe"
-SectionEnd
-
-Section "Uninstall"
-    Delete "`$INSTDIR\mixosc.exe"
-    Delete "`$INSTDIR\Uninstall.exe"
-    Delete "`$SMPROGRAMS\MixOSC\MixOSC.lnk"
-    Delete "`$SMPROGRAMS\MixOSC\Uninstall.lnk"
-    RMDir "`$SMPROGRAMS\MixOSC"
-    Delete "`$DESKTOP\MixOSC.lnk"
-    DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MixOSC"
-    DeleteRegKey HKCU "Software\MixOSC"
-    RMDir "`$INSTDIR"
-SectionEnd
-"@
-
-Set-Content -Path "$nsiTemp\installer.nsi" -Value $installerNsi
-Copy-Item "$PSScriptRoot\..\LICENSE" "$nsiTemp\LICENSE" -Force -ErrorAction SilentlyContinue
-
+Copy-Item "$PSScriptRoot\installer.nsi" "$nsiTemp\installer.nsi" -Force
+Copy-Item (Join-Path $sourceDir "LICENSE") "$nsiTemp\LICENSE" -Force -ErrorAction SilentlyContinue
+$versionMatch = [regex]::Match($pkgVersion, '^(\d+)\.(\d+)\.(\d+)')
+if ($versionMatch.Success) {
+    $productVersion = "$($versionMatch.Groups[1].Value).$($versionMatch.Groups[2].Value).$($versionMatch.Groups[3].Value).0"
+} else {
+    Write-Warning "Package version '$pkgVersion' is not a numeric semver; using 0.0.0.0 for installer file metadata."
+    $productVersion = "0.0.0.0"
+}
+$iconPath = "$nsiTemp\mixosc-icon.ico"
+$projectIcon = Join-Path $sourceDir "assets\images\mixosc-icon.ico"
+if (Test-Path $projectIcon) {
+    Copy-Item $projectIcon $iconPath -Force
+} else {
+    $iconPath = ""
+}
+$nsisDefines = @(
+    "/INPUTCHARSET", "UTF8",
+    "/DMIXOSC_VERSION=$pkgVersion",
+    "/DMIXOSC_PRODUCT_VERSION=$productVersion"
+)
+if ($iconPath) {
+    $nsisDefines += "/DMIXOSC_ICON=$iconPath"
+}
 Push-Location $nsiTemp
-& $nsisPath "$nsiTemp\installer.nsi"
+& $nsisPath @nsisDefines "$nsiTemp\installer.nsi"
 Pop-Location
-
-$distDir = Join-Path (Split-Path $PSScriptRoot -Parent) "dist"
+$distDir = Join-Path $sourceDir "dist"
 New-Item -ItemType Directory -Force $distDir | Out-Null
-$outFile = "mixosc-$pkgVersion.exe"
+$outFile = "mixosc-$pkgVersion.windows.amd64.exe"
 Copy-Item "$nsiTemp\mixosc-setup.exe" "$distDir\$outFile" -Force -ErrorAction SilentlyContinue
-
 if (Test-Path "$distDir\$outFile") {
     Write-Host "Done: $(Resolve-Path "$distDir\$outFile")"
 } else {
