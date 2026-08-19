@@ -8,23 +8,23 @@ use crate::{
     osc_meter_group_request, parse_console_update, parse_input_meter_packet,
     parse_main_meter_packet, parse_rta_meter_packet, parse_target, renew_request,
 };
-use iced::futures::sink::SinkExt;
-use iced::futures::{StreamExt, channel::mpsc, stream::BoxStream};
-use iced::stream;
-use iced::widget::{
+use maolan_widgets::horizontal_slider::horizontal_slider;
+use maolan_widgets::iced::futures::sink::SinkExt;
+use maolan_widgets::iced::futures::{StreamExt, channel::mpsc, stream::BoxStream};
+use maolan_widgets::iced::stream;
+use maolan_widgets::iced::widget::{
     Space, button, canvas,
     canvas::{Geometry, Path, Text},
     column, container, row, scrollable, text, text_input,
 };
-use iced::{
+use maolan_widgets::iced::{
     Background, Border, Color, Element, Fill, Length, Point, Rectangle, Renderer, Subscription,
     Task, Theme, mouse, time,
 };
-use iced_fonts::lucide::{
+use maolan_widgets::iced_fonts::lucide::{
     activity, audio_lines, audio_waveform, equal, file_input, git_merge, panel_left, save, send,
     settings, shield, sliders_vertical, toggle_left,
 };
-use maolan_widgets::horizontal_slider::horizontal_slider;
 use maolan_widgets::meters::meters;
 use maolan_widgets::slider::slider as vertical_slider;
 use std::env;
@@ -81,7 +81,7 @@ impl<Message> canvas::Program<Message> for FaderTicks {
             frame.fill(
                 &Path::rectangle(
                     Point::new(tick_x, FADER_SCALE_OUTER_PAD_Y + label_y + 4.0),
-                    iced::Size::new(4.0, 1.0),
+                    maolan_widgets::iced::Size::new(4.0, 1.0),
                 ),
                 Color::from_rgba(0.62, 0.67, 0.77, 0.78),
             );
@@ -1608,7 +1608,7 @@ fn mixer_selection_view<'a>(
 
                 let row = row![icon, info_col]
                     .spacing(12)
-                    .align_y(iced::Alignment::Center);
+                    .align_y(maolan_widgets::iced::Alignment::Center);
 
                 let btn = button(container(row).padding([8, 12]))
                     .on_press(Message::MixerSelected(mixer.addr))
@@ -1721,7 +1721,7 @@ fn top_detail_panel(app: &StatusApp) -> Option<Element<'_, Message>> {
 
 #[derive(Clone, Copy)]
 pub struct NavTab {
-    icon: fn() -> iced::widget::Text<'static, Theme>,
+    icon: fn() -> maolan_widgets::iced::widget::Text<'static, Theme>,
     label: &'static str,
     view: AppView,
 }
@@ -1883,7 +1883,7 @@ fn spill_bar(app: &StatusApp) -> Element<'static, Message> {
         clear_solo_btn,
     ]
     .spacing(4)
-    .align_y(iced::Alignment::Center)
+    .align_y(maolan_widgets::iced::Alignment::Center)
     .into()
 }
 
@@ -1960,7 +1960,7 @@ fn top_nav_bar(app: &StatusApp) -> Element<'static, Message> {
         row!()
             .spacing(4)
             .padding([3, 3])
-            .align_y(iced::Alignment::Center),
+            .align_y(maolan_widgets::iced::Alignment::Center),
         |row, tab| row.push(nav_button(tab, app.active_view == tab.view)),
     );
 
@@ -1980,7 +1980,7 @@ fn top_nav_bar(app: &StatusApp) -> Element<'static, Message> {
     let bar = row![tabs, Space::new().width(Length::Fill), disconnect_btn]
         .spacing(8)
         .padding([4, 8])
-        .align_y(iced::Alignment::Center)
+        .align_y(maolan_widgets::iced::Alignment::Center)
         .width(Length::Fill);
 
     container(bar)
@@ -2034,7 +2034,7 @@ fn nav_button(tab: NavTab, selected: bool) -> Element<'static, Message> {
                 .color(if selected { active_text } else { inactive_text }),
         ]
         .spacing(8)
-        .align_y(iced::Alignment::Center),
+        .align_y(maolan_widgets::iced::Alignment::Center),
     )
     .padding([4, 10])
     .width(Length::Fixed(108.0))
@@ -3136,7 +3136,9 @@ fn mixer_addr_from_args_or_env() -> Option<SocketAddr> {
 
 fn mixer_strips(app: &StatusApp) -> Element<'_, Message> {
     let strips = app.visible_strips().iter().enumerate().fold(
-        row!().spacing(0).align_y(iced::Alignment::End),
+        row!()
+            .spacing(0)
+            .align_y(maolan_widgets::iced::Alignment::End),
         |strips, (index, target)| {
             let value = app.faders[index];
             let gain_value = app.gain_drag_values[index]
@@ -3163,14 +3165,16 @@ fn mixer_strips(app: &StatusApp) -> Element<'_, Message> {
                     .map(|()| unreachable!("tick widget does not emit messages")),
             )
             .height(Length::Fill)
-            .align_y(iced::alignment::Vertical::Bottom);
+            .align_y(maolan_widgets::iced::alignment::Vertical::Bottom);
             let sends: Element<'_, Message> = match target {
                 FaderTarget::Channel(_) | FaderTarget::Aux(_) | FaderTarget::FxRtn(_) => app
                     .send_buses()
                     .iter()
                     .enumerate()
                     .fold(
-                        column!().spacing(2).align_x(iced::Alignment::Center),
+                        column!()
+                            .spacing(2)
+                            .align_x(maolan_widgets::iced::Alignment::Center),
                         |column, (bus_index, _bus)| {
                             let send_value = app.sends[index][bus_index].unwrap_or(0.0);
                             column.push(
@@ -3191,7 +3195,9 @@ fn mixer_strips(app: &StatusApp) -> Element<'_, Message> {
                     .iter()
                     .enumerate()
                     .fold(
-                        column!().spacing(2).align_x(iced::Alignment::Center),
+                        column!()
+                            .spacing(2)
+                            .align_x(maolan_widgets::iced::Alignment::Center),
                         |column, (bus_index, _bus)| {
                             let send_value = app.sends[index][bus_index].unwrap_or(0.0);
                             column.push(
@@ -3251,7 +3257,7 @@ fn mixer_strips(app: &StatusApp) -> Element<'_, Message> {
 
             let mut strip = column![top_controls]
                 .spacing(10)
-                .align_x(iced::Alignment::Center);
+                .align_x(maolan_widgets::iced::Alignment::Center);
             let strip_color = app.colors[index].unwrap_or(0);
             let color_rgb = x32_color_to_rgb(strip_color);
             let is_inverted = (9..=15).contains(&strip_color);
@@ -3325,7 +3331,7 @@ fn mixer_strips(app: &StatusApp) -> Element<'_, Message> {
                 ]
                 .spacing(6)
                 .height(Length::Fill)
-                .align_y(iced::Alignment::End),
+                .align_y(maolan_widgets::iced::Alignment::End),
             );
             strip = strip.push(
                 button(text("MUTE").size(12))
@@ -3383,7 +3389,7 @@ fn mixer_strips(app: &StatusApp) -> Element<'_, Message> {
                 .map(|()| unreachable!("tick widget does not emit messages")),
         )
         .height(Length::Fill)
-        .align_y(iced::alignment::Vertical::Bottom);
+        .align_y(maolan_widgets::iced::alignment::Vertical::Bottom);
 
         column![
             Space::new().height(Length::Fixed(26.0)),
@@ -3433,7 +3439,7 @@ fn mixer_strips(app: &StatusApp) -> Element<'_, Message> {
             ]
             .spacing(6)
             .height(Length::Fill)
-            .align_y(iced::Alignment::End),
+            .align_y(maolan_widgets::iced::Alignment::End),
             button(text("MUTE").size(12))
                 .padding([6, 8])
                 .style(move |_theme: &Theme, _status| toggle_button_style(
@@ -3444,7 +3450,7 @@ fn mixer_strips(app: &StatusApp) -> Element<'_, Message> {
             text("LR").size(14),
         ]
         .spacing(10)
-        .align_x(iced::Alignment::Center)
+        .align_x(maolan_widgets::iced::Alignment::Center)
     };
 
     let master_strip = container(master_strip)
@@ -3481,7 +3487,7 @@ fn mixer_strips(app: &StatusApp) -> Element<'_, Message> {
         .spacing(0)
         .width(Length::Fill)
         .height(Length::Fill)
-        .align_y(iced::Alignment::End),
+        .align_y(maolan_widgets::iced::Alignment::End),
     )
     .width(Length::Fill)
     .height(Length::Fill)
@@ -3523,7 +3529,7 @@ fn strip_mixer_top(
             .height(Length::Fixed(10.0)),
         ]
         .spacing(4)
-        .align_x(iced::Alignment::Center)
+        .align_x(maolan_widgets::iced::Alignment::Center)
         .into()
     };
 
@@ -3542,13 +3548,13 @@ fn strip_mixer_top(
                 .height(Length::Fixed(12.0)),
             ]
             .spacing(4)
-            .align_x(iced::Alignment::Center)
+            .align_x(maolan_widgets::iced::Alignment::Center)
             .into()
         };
 
     let mut top = column![gain_block]
         .spacing(10)
-        .align_x(iced::Alignment::Center);
+        .align_x(maolan_widgets::iced::Alignment::Center);
     if !hide_upper_controls && !matches!(target, FaderTarget::Mtx(_) | FaderTarget::Dca(_)) {
         top = top.push(sends);
         top = top.push(
@@ -3558,7 +3564,7 @@ fn strip_mixer_top(
                 strip_module_item("Dyn"),
             ]
             .spacing(4)
-            .align_x(iced::Alignment::Center),
+            .align_x(maolan_widgets::iced::Alignment::Center),
         );
     }
     top.push(pan_block).into()
@@ -3579,7 +3585,7 @@ fn gate_summary<'a>(app: &'a StatusApp, base: &str) -> Element<'a, Message> {
             .color(Color::from_rgb8(0xA9, 0xAC, 0xB3)),
     ]
     .spacing(4)
-    .align_x(iced::Alignment::Center)
+    .align_x(maolan_widgets::iced::Alignment::Center)
     .into()
 }
 
@@ -3604,7 +3610,7 @@ fn eq_summary<'a>(app: &'a StatusApp, base: &str, bands: u8) -> Element<'a, Mess
             .color(Color::from_rgb8(0xA9, 0xAC, 0xB3)),
     ]
     .spacing(4)
-    .align_x(iced::Alignment::Center)
+    .align_x(maolan_widgets::iced::Alignment::Center)
     .into()
 }
 
@@ -3635,7 +3641,7 @@ fn dyn_summary<'a>(app: &'a StatusApp, base: &str) -> Element<'a, Message> {
             .color(Color::from_rgb8(0xA9, 0xAC, 0xB3)),
     ]
     .spacing(4)
-    .align_x(iced::Alignment::Center)
+    .align_x(maolan_widgets::iced::Alignment::Center)
     .into()
 }
 
@@ -3651,7 +3657,7 @@ fn module_summary_panel<'a>(
             content,
         ]
         .spacing(8)
-        .align_x(iced::Alignment::Center),
+        .align_x(maolan_widgets::iced::Alignment::Center),
     )
     .style(|_theme: &Theme| container::Style {
         background: Some(Background::Color(Color::from_rgb8(0x1A, 0x1A, 0x1C))),
@@ -3736,7 +3742,7 @@ fn icon_selector(path: String, current: i32) -> Element<'static, Message> {
             .padding([2, 6]),
     ]
     .spacing(4)
-    .align_y(iced::Alignment::Center)
+    .align_y(maolan_widgets::iced::Alignment::Center)
     .into()
 }
 
@@ -3840,7 +3846,7 @@ fn channel_detail_panel(app: &StatusApp) -> Element<'_, Message> {
             .height(Length::Fixed(14.0)),
         ]
         .spacing(10)
-        .align_x(iced::Alignment::Center),
+        .align_x(maolan_widgets::iced::Alignment::Center),
     );
 
     let mut panels_row = row![gate_panel, eq_panel, dyn_panel, sends_panel,].spacing(2);
@@ -3873,7 +3879,7 @@ fn insert_selector<'a>(path: String, current: i32) -> Element<'a, Message> {
             .padding([2, 6]),
     ]
     .spacing(4)
-    .align_y(iced::Alignment::Center)
+    .align_y(maolan_widgets::iced::Alignment::Center)
     .into()
 }
 
@@ -4440,7 +4446,7 @@ fn cycle_button(
             }),
     ]
     .spacing(4)
-    .align_y(iced::Alignment::Center)
+    .align_y(maolan_widgets::iced::Alignment::Center)
     .into()
 }
 
@@ -4630,7 +4636,7 @@ fn eq_detail_panel_for_base<'a>(
         column![
             row![eq_toggle, text("Equalizer").size(14)]
                 .spacing(12)
-                .align_y(iced::Alignment::Center),
+                .align_y(maolan_widgets::iced::Alignment::Center),
             bands_row,
         ]
         .spacing(12),
@@ -4876,7 +4882,7 @@ fn tap_type_selector<'a>(bus: u8, path: String, current: i32) -> Element<'a, Mes
             ),
     ]
     .spacing(4)
-    .align_y(iced::Alignment::Center)
+    .align_y(maolan_widgets::iced::Alignment::Center)
     .into()
 }
 
@@ -5385,7 +5391,7 @@ fn fx_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                     .height(Length::Fixed(12.0)),
                 ]
                 .spacing(2)
-                .align_y(iced::Alignment::Center),
+                .align_y(maolan_widgets::iced::Alignment::Center),
             );
         }
 
@@ -5477,7 +5483,7 @@ fn scenes_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                             }),
                     ]
                     .spacing(4)
-                    .align_y(iced::Alignment::Center);
+                    .align_y(maolan_widgets::iced::Alignment::Center);
                     col = col.push(row);
                     col
                 })
@@ -5587,7 +5593,7 @@ fn scenes_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                             ),
                     ]
                     .spacing(4)
-                    .align_y(iced::Alignment::Center);
+                    .align_y(maolan_widgets::iced::Alignment::Center);
                     col = col.push(row);
 
                     if app.editing_scene_safes == Some(scene) {
@@ -5748,7 +5754,7 @@ fn scenes_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                             }),
                     ]
                     .spacing(4)
-                    .align_y(iced::Alignment::Center);
+                    .align_y(maolan_widgets::iced::Alignment::Center);
                     col.push(row)
                 })
                 .into();
@@ -5833,7 +5839,7 @@ fn scenes_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                             ),
                     ]
                     .spacing(4)
-                    .align_y(iced::Alignment::Center);
+                    .align_y(maolan_widgets::iced::Alignment::Center);
                     let mut col = col.push(row);
 
                     if editing {
@@ -5917,7 +5923,7 @@ fn scenes_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                                     toggles,
                                 ]
                                 .spacing(4)
-                                .align_y(iced::Alignment::Center)
+                                .align_y(maolan_widgets::iced::Alignment::Center)
                                 .into()
                             };
 
@@ -6027,7 +6033,7 @@ fn scenes_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                     }),
             ]
             .spacing(6)
-            .align_y(iced::Alignment::Center);
+            .align_y(maolan_widgets::iced::Alignment::Center);
 
             top_panel_shell(
                 column![
@@ -6787,7 +6793,7 @@ fn routing_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                         ),
                 ]
                 .spacing(4)
-                .align_y(iced::Alignment::Center),
+                .align_y(maolan_widgets::iced::Alignment::Center),
             )
         })
         .into();
@@ -6840,7 +6846,7 @@ fn routing_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                     ),
             ]
             .spacing(4)
-            .align_y(iced::Alignment::Center),
+            .align_y(maolan_widgets::iced::Alignment::Center),
         );
     }
     for n in 1..=8 {
@@ -6889,7 +6895,7 @@ fn routing_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                     ),
             ]
             .spacing(4)
-            .align_y(iced::Alignment::Center),
+            .align_y(maolan_widgets::iced::Alignment::Center),
         );
     }
     for n in 1..=4 {
@@ -6938,7 +6944,7 @@ fn routing_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                     ),
             ]
             .spacing(4)
-            .align_y(iced::Alignment::Center),
+            .align_y(maolan_widgets::iced::Alignment::Center),
         );
     }
     for n in 1..=3 {
@@ -6987,7 +6993,7 @@ fn routing_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                     ),
             ]
             .spacing(4)
-            .align_y(iced::Alignment::Center),
+            .align_y(maolan_widgets::iced::Alignment::Center),
         );
     }
     panels = panels.push(detail_panel("Bus/FX/Mtx", link_col));
@@ -7029,7 +7035,7 @@ fn routing_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                     )),
                 ]
                 .spacing(4)
-                .align_y(iced::Alignment::Center),
+                .align_y(maolan_widgets::iced::Alignment::Center),
             )
         })
         .into();
@@ -7057,7 +7063,7 @@ fn routing_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                         }),
                     ]
                     .spacing(4)
-                    .align_y(iced::Alignment::Center),
+                    .align_y(maolan_widgets::iced::Alignment::Center),
                 )
             })
             .into();
@@ -7104,7 +7110,7 @@ fn routing_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                         .padding([1, 4]),
                 ]
                 .spacing(2)
-                .align_y(iced::Alignment::Center),
+                .align_y(maolan_widgets::iced::Alignment::Center),
             );
         }
         col.push(group_col)
@@ -7163,7 +7169,7 @@ fn routing_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                     .height(Length::Fixed(10.0)),
                 ]
                 .spacing(4)
-                .align_y(iced::Alignment::Center),
+                .align_y(maolan_widgets::iced::Alignment::Center),
             )
         })
         .into();
@@ -7217,7 +7223,7 @@ fn routing_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                         .padding([1, 4]),
                 ]
                 .spacing(2)
-                .align_y(iced::Alignment::Center),
+                .align_y(maolan_widgets::iced::Alignment::Center),
             )
         })
         .into();
@@ -7253,7 +7259,7 @@ fn routing_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                         .padding([1, 4]),
                 ]
                 .spacing(2)
-                .align_y(iced::Alignment::Center),
+                .align_y(maolan_widgets::iced::Alignment::Center),
             )
         })
         .into();
@@ -7346,7 +7352,7 @@ fn rta_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                 .padding([2, 6]),
         ]
         .spacing(6)
-        .align_y(iced::Alignment::Center),
+        .align_y(maolan_widgets::iced::Alignment::Center),
         Space::new().width(Length::Fixed(16.0)),
         row![
             text("Gain:")
@@ -7370,7 +7376,7 @@ fn rta_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                 .padding([2, 6]),
         ]
         .spacing(4)
-        .align_y(iced::Alignment::Center),
+        .align_y(maolan_widgets::iced::Alignment::Center),
         Space::new().width(Length::Fixed(12.0)),
         param_toggle("Auto", "/-prefs/rta/autogain".to_owned(), rta_autogain),
         Space::new().width(Length::Fixed(12.0)),
@@ -7387,7 +7393,7 @@ fn rta_detail_panel(app: &StatusApp) -> Element<'_, Message> {
             .height(Length::Fixed(12.0)),
         ]
         .spacing(4)
-        .align_y(iced::Alignment::Center),
+        .align_y(maolan_widgets::iced::Alignment::Center),
         Space::new().width(Length::Fixed(12.0)),
         cycle_button(
             "Mode",
@@ -7397,7 +7403,7 @@ fn rta_detail_panel(app: &StatusApp) -> Element<'_, Message> {
         ),
     ]
     .spacing(4)
-    .align_y(iced::Alignment::Center);
+    .align_y(maolan_widgets::iced::Alignment::Center);
 
     let content = column![
         controls,
@@ -7411,10 +7417,10 @@ fn rta_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                 .color(Color::from_rgb8(0x8E, 0x94, 0x9D)),
         ]
         .spacing(4)
-        .align_y(iced::Alignment::Center),
+        .align_y(maolan_widgets::iced::Alignment::Center),
         container(bars)
             .height(Length::Fixed(200.0))
-            .align_y(iced::Alignment::End)
+            .align_y(maolan_widgets::iced::Alignment::End)
             .style(|_theme: &Theme| container::Style {
                 background: Some(Background::Color(Color::from_rgb8(0x1A, 0x1A, 0x1C))),
                 ..Default::default()
@@ -7429,10 +7435,10 @@ fn rta_detail_panel(app: &StatusApp) -> Element<'_, Message> {
                 .color(Color::from_rgb8(0x8E, 0x94, 0x9D)),
         ]
         .spacing(4)
-        .align_y(iced::Alignment::Center),
+        .align_y(maolan_widgets::iced::Alignment::Center),
     ]
     .spacing(6)
-    .align_x(iced::Alignment::Center);
+    .align_x(maolan_widgets::iced::Alignment::Center);
 
     top_panel_shell(content)
 }
@@ -7449,7 +7455,7 @@ fn detail_panel<'a>(
             content.into(),
         ]
         .spacing(10)
-        .align_x(iced::Alignment::Center),
+        .align_x(maolan_widgets::iced::Alignment::Center),
     )
     .style(|_theme: &Theme| container::Style {
         background: Some(Background::Color(Color::from_rgb8(0x1A, 0x1A, 0x1C))),
@@ -7495,7 +7501,7 @@ fn channel_send_row<'a>(
         .height(Length::Fixed(10.0)),
     ]
     .spacing(8)
-    .align_y(iced::Alignment::Center)
+    .align_y(maolan_widgets::iced::Alignment::Center)
     .into()
 }
 
@@ -7783,7 +7789,7 @@ fn param_slider_labeled<'a>(
                 .color(Color::from_rgb8(0xA9, 0xAC, 0xB3)),
         ]
         .spacing(6)
-        .align_y(iced::Alignment::Center),
+        .align_y(maolan_widgets::iced::Alignment::Center),
         horizontal_slider(0.0..=1.0, value, move |next| {
             Message::ParameterChanged(path.clone(), OscValue::Float(next))
         })
