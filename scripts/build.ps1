@@ -7,11 +7,12 @@ $ErrorActionPreference = "Stop"
 $target   = "x86_64-pc-windows-msvc"
 $nsisPath = "C:\nsis-3.10\makensis.exe"
 $staging  = "C:\maolan-staging\mixosc"
+$sourceDir = Split-Path $PSScriptRoot -Parent
 
 # ---------------------------------------------------------------------------
 # Version from Cargo.toml
 # ---------------------------------------------------------------------------
-$cargoToml = Join-Path (Split-Path $PSScriptRoot -Parent) "Cargo.toml"
+$cargoToml = Join-Path $sourceDir "Cargo.toml"
 $pkgVersion = "0.0.0"
 if (Test-Path $cargoToml) {
     $versionLine = Select-String -Path $cargoToml -Pattern '^version\s*=\s*"(.+)"' | Select-Object -First 1
@@ -180,8 +181,6 @@ if (-not (Test-Path $vcRedist)) {
 # ---------------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------------
-$sourceDir = Split-Path $PSScriptRoot -Parent
-
 Write-Host "Cleaning old build artifacts..."
 Push-Location $sourceDir
 cargo clean
@@ -195,7 +194,8 @@ Pop-Location
 # ---------------------------------------------------------------------------
 Write-Host "Staging files to $staging..."
 New-Item -ItemType Directory -Force $staging | Out-Null
-Copy-Item (Join-Path $sourceDir "target\$target\release\mixosc.exe") $staging -Force
+$binDir = Join-Path $sourceDir "target\$target\release"
+Copy-Item (Join-Path $binDir "mixosc.exe") $staging -Force
 Copy-Item $vcRedist $staging -Force
 
 # ---------------------------------------------------------------------------

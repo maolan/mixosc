@@ -13,6 +13,8 @@ set -euo pipefail
 #   -t, --target-dir DIR     Local target directory (useful when source is on NFS)
 #   -h, --help               Show this help message
 
+. /etc/os-release
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_DIR="$(dirname "$SCRIPT_DIR")"
 OUTPUT_DIR="$SOURCE_DIR/dist"
@@ -20,7 +22,7 @@ OVERRIDE_VERSION=""
 TARGET_DIR=""
 
 usage() {
-    sed -n '2,14p' "$0" | sed 's/^# //'
+    sed -n '4,14p' "$0" | sed 's/^# //'
     exit 0
 }
 
@@ -67,7 +69,7 @@ fi
 
 RPM_ARCH="$(uname -m)"
 PKG_NAME="mixosc"
-RPM_NAME="${PKG_NAME}-${PKG_VERSION}-1.fedora.${RPM_ARCH}.rpm"
+RPM_NAME="${PKG_NAME}-${PKG_VERSION}-1.fc${VERSION_ID}.${RPM_ARCH}.rpm"
 
 echo "========================================"
 echo "Building MixOSC .rpm package"
@@ -227,12 +229,10 @@ mkdir -p "$OUTPUT_DIR"
 
 # rpmbuild expands Release, so find the actual file name
 BUILT_RPM="$(ls "$SPEC_DIR/RPMS/$RPM_ARCH/"*.rpm | head -n1)"
-cp "$BUILT_RPM" "$OUTPUT_DIR/"
-
-BUILT_RPM_BASENAME="$(basename "$BUILT_RPM")"
+cp "$BUILT_RPM" "$OUTPUT_DIR/$RPM_NAME"
 
 echo ""
 echo "========================================"
 echo "Package built successfully:"
-echo "  $OUTPUT_DIR/$BUILT_RPM_BASENAME"
+echo "  $OUTPUT_DIR/$RPM_NAME"
 echo "========================================"
