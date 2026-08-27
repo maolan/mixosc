@@ -11,5 +11,5 @@ keywords = ["audio", "osc", "x32", "mixer"]
 categories = ["multimedia::audio"]
 
 [dependencies]
-maolan-widgets = "0.0.35"
+maolan-widgets = "0.0.36"
 tokio = { version = "1.53.1", features = ["net", "time"] }

@@ -4,7 +4,7 @@
 
 Rust OSC client for Behringer **X32** and **X-Air** digital mixers.
 
-![MixOSC](images/mixosc.png)
+![MixOSC](assets/images/mixosc.png)
 
 `mixosc` currently contains two pieces:
 
