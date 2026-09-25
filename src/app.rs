@@ -1,8 +1,8 @@
 use crate::ProbeOutcome;
-use crate::message::{AppView, ConnectionStatus, Message};
+use crate::message::{AppView, ConnectionStatus};
 use crate::model::{ConsoleUpdate, DiscoveredMixer, FaderTarget, GainSource, MixerModel};
 use crate::parameters::OscValue;
-use crate::state::{MAX_SEND_BUS_COUNT, MAX_STRIP_COUNT, MixOscApp, StatusApp};
+use crate::state::{MAX_SEND_BUS_COUNT, MAX_STRIP_COUNT, StatusApp};
 use crate::ui::format::*;
 use crate::ui::nav::*;
 use crate::ui::panel_channel::*;
@@ -10,6 +10,11 @@ use crate::ui::panel_fx::*;
 use crate::ui::panel_routing::*;
 use crate::ui::panel_scenes::*;
 use crate::ui::panel_setup::*;
+
+// Pre-restructure paths kept alive for downstream consumers (the DAW embeds
+// the mixer UI through `mixosc::app::{MixOscApp, Message, ...}`).
+pub use crate::message::Message;
+pub use crate::state::MixOscApp;
 use crate::ui::strips::*;
 use crate::workers::*;
 use maolan_widgets::iced::widget::{button, column, container, row, scrollable, text};
