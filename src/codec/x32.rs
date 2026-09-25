@@ -1,11 +1,16 @@
-use crate::common::{
-    COLOR_RESPONSE_SUFFIX, ConsoleUpdate, FADER_RESPONSE_SUFFIX, FaderTarget, GAIN_RESPONSE_SUFFIX,
+use crate::model::{
+    ConsoleUpdate, FaderTarget, MainMeterLevels, StripColor, StripFader, StripGain, StripMeter,
+    StripMute, StripName, StripPan, StripSend, StripSolo,
+};
+use crate::net::ProbeError;
+use crate::osc::osc_address;
+use crate::osc::{
+    COLOR_RESPONSE_SUFFIX, FADER_RESPONSE_SUFFIX, GAIN_RESPONSE_SUFFIX,
     HEADAMP_GAIN_RESPONSE_SUFFIX, HEADAMP_INDEX_RESPONSE_SUFFIX, INPUT_METERS_ALIAS,
     INPUT_METERS_REQUEST, MAIN_METERS_ALIAS, MAIN_METERS_REQUEST, MUTE_RESPONSE_SUFFIX,
-    MainMeterLevels, NAME_RESPONSE_SUFFIX, PAN_RESPONSE_SUFFIX, ProbeError, SOLO_RESPONSE_PREFIX,
-    StripColor, StripFader, StripGain, StripMeter, StripMute, StripName, StripPan, StripSend,
-    StripSolo, osc_address, osc_padded_len, parse_color_value, parse_float_value, parse_int_value,
-    parse_meter_blob, parse_string_value, parse_switch_value, quantize_gain_step, read_be_u32,
+    NAME_RESPONSE_SUFFIX, PAN_RESPONSE_SUFFIX, SOLO_RESPONSE_PREFIX, osc_padded_len,
+    parse_color_value, parse_float_value, parse_int_value, parse_meter_blob, parse_string_value,
+    parse_switch_value, quantize_gain_step, read_be_u32,
 };
 
 pub fn fader_path(target: FaderTarget) -> String {
@@ -130,7 +135,7 @@ pub fn parse_console_update(packet: &[u8]) -> Option<ConsoleUpdate> {
         return Some(ConsoleUpdate::Gain(StripGain {
             target,
             value: decode_trim_gain(value),
-            source: crate::common::GainSource::Trim,
+            source: crate::model::GainSource::Trim,
         }));
     }
 

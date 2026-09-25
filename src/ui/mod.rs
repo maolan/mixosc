@@ -1,0 +1,9 @@
+pub(crate) mod format;
+pub(crate) mod nav;
+pub(crate) mod panel_channel;
+pub(crate) mod panel_fx;
+pub(crate) mod panel_routing;
+pub(crate) mod panel_scenes;
+pub(crate) mod panel_setup;
+pub(crate) mod strips;
+pub(crate) mod widgets;

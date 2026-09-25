@@ -1,5 +1,6 @@
-use crate::common::{
-    osc_address, osc_float_message, osc_int_message, osc_padded_len, osc_string, osc_string_message,
+use crate::osc::osc_address;
+use crate::osc::{
+    osc_float_message, osc_int_message, osc_padded_len, osc_string, osc_string_message,
 };
 
 #[derive(Debug, Clone, PartialEq)]

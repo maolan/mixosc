@@ -1,10 +1,14 @@
-use crate::common::{
-    COLOR_RESPONSE_SUFFIX, ConsoleUpdate, FADER_RESPONSE_SUFFIX, FaderTarget, GAIN_RESPONSE_SUFFIX,
-    HEADAMP_GAIN_RESPONSE_SUFFIX, MUTE_RESPONSE_SUFFIX, MainMeterLevels, NAME_RESPONSE_SUFFIX,
-    PAN_RESPONSE_SUFFIX, ProbeError, SOLO_RESPONSE_PREFIX, StripColor, StripFader, StripGain,
-    StripMeter, StripMute, StripName, StripPan, StripSend, StripSolo, osc_address, osc_padded_len,
-    parse_color_value, parse_float_value, parse_string_value, parse_switch_value,
-    quantize_gain_step,
+use crate::model::{
+    ConsoleUpdate, FaderTarget, MainMeterLevels, StripColor, StripFader, StripGain, StripMeter,
+    StripMute, StripName, StripPan, StripSend, StripSolo,
+};
+use crate::net::ProbeError;
+use crate::osc::osc_address;
+use crate::osc::{
+    COLOR_RESPONSE_SUFFIX, FADER_RESPONSE_SUFFIX, GAIN_RESPONSE_SUFFIX,
+    HEADAMP_GAIN_RESPONSE_SUFFIX, MUTE_RESPONSE_SUFFIX, NAME_RESPONSE_SUFFIX, PAN_RESPONSE_SUFFIX,
+    SOLO_RESPONSE_PREFIX, osc_padded_len, parse_color_value, parse_float_value, parse_string_value,
+    parse_switch_value, quantize_gain_step,
 };
 
 pub fn fader_path(target: FaderTarget) -> String {
@@ -120,7 +124,7 @@ pub fn parse_console_update(packet: &[u8]) -> Option<ConsoleUpdate> {
         return Some(ConsoleUpdate::Gain(StripGain {
             target,
             value: decode_headamp_gain(value),
-            source: crate::common::GainSource::Headamp(match target {
+            source: crate::model::GainSource::Headamp(match target {
                 FaderTarget::Channel(n) => n,
                 _ => 0,
             }),
@@ -417,7 +421,7 @@ pub fn parse_main_meter_packet(packet: &[u8]) -> Result<MainMeterLevels, ProbeEr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::osc_string;
+    use crate::osc::osc_string;
 
     fn xr18_meters_packet(values: &[i16]) -> Vec<u8> {
         let mut packet = osc_string("/meters/1");
