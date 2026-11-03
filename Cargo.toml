@@ -1,6 +1,6 @@
 [package]
 name = "mixosc"
-version = "0.0.16"
+version = "0.0.17"
 edition = "2024"
 description = "Rust OSC client and control surface for Behringer X32-family mixers"
 license = "BSD-2-Clause"
@@ -11,5 +11,14 @@ keywords = ["audio", "osc", "x32", "mixer"]
 categories = ["multimedia::audio"]
 
 [dependencies]
-maolan-widgets = "0.0.36"
+maolan-widgets = { version = "0.0.36", optional = true }
 tokio = { version = "1.53.1", features = ["net", "time"] }
+
+[features]
+default = ["gui"]
+gui = ["dep:maolan-widgets"]
+
+[[bin]]
+name = "mixosc"
+path = "src/main.rs"
+required-features = ["gui"]

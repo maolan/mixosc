@@ -159,6 +159,7 @@ pub struct MixerConfig {
     pub mute_group_count: usize,
 }
 
+#[cfg(feature = "gui")]
 const X32_VISIBLE_STRIPS: &[FaderTarget] = &[
     FaderTarget::Channel(1),
     FaderTarget::Channel(2),
@@ -236,9 +237,12 @@ const X32_VISIBLE_STRIPS: &[FaderTarget] = &[
     FaderTarget::Dca(8),
 ];
 
+#[cfg(feature = "gui")]
 const X32_SEND_BUSES: &[u8] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+#[cfg(feature = "gui")]
 const X32_MATRIX_SENDS: &[u8] = &[1, 2, 3, 4, 5, 6];
 
+#[cfg(feature = "gui")]
 const XR18_VISIBLE_STRIPS: &[FaderTarget] = &[
     FaderTarget::Channel(1),
     FaderTarget::Channel(2),
@@ -273,9 +277,12 @@ const XR18_VISIBLE_STRIPS: &[FaderTarget] = &[
     FaderTarget::Dca(4),
 ];
 
+#[cfg(feature = "gui")]
 const XR18_SEND_BUSES: &[u8] = &[1, 2, 3, 4, 5, 6];
+#[cfg(feature = "gui")]
 const XR18_MATRIX_SENDS: &[u8] = &[];
 
+#[cfg(feature = "gui")]
 pub(crate) fn config_for_model(model: MixerModel) -> MixerConfig {
     match model {
         MixerModel::X32 => MixerConfig {

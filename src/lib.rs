@@ -1,13 +1,19 @@
+#[cfg(feature = "gui")]
 pub mod app;
 mod codec;
+#[cfg(feature = "gui")]
 mod message;
 mod model;
 mod net;
 mod osc;
+#[cfg(feature = "gui")]
 mod panel_paths;
 pub mod parameters;
+#[cfg(feature = "gui")]
 mod state;
+#[cfg(feature = "gui")]
 mod ui;
+#[cfg(feature = "gui")]
 mod workers;
 
 pub use codec::{
