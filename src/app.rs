@@ -218,6 +218,51 @@ pub fn update_mixer(app: &mut StatusApp, message: Message) -> Task<Message> {
             };
             spawn_set_parameter(mixer_addr, path, value)
         }
+        Message::EqBandChanged {
+            base,
+            band,
+            frequency,
+            gain,
+        } => {
+            let frequency_path = format!("{base}/eq/{band}/f");
+            let gain_path = format!("{base}/eq/{band}/g");
+            app.parameter_values
+                .insert(frequency_path.clone(), OscValue::Float(frequency));
+            app.parameter_values
+                .insert(gain_path.clone(), OscValue::Float(gain));
+            let Some(mixer_addr) = app.mixer_addr else {
+                return Task::none();
+            };
+            Task::batch([
+                spawn_set_parameter(mixer_addr, frequency_path, OscValue::Float(frequency)),
+                spawn_set_parameter(mixer_addr, gain_path, OscValue::Float(gain)),
+            ])
+        }
+        Message::EqBandReset {
+            base,
+            band,
+            frequency,
+            gain,
+            q,
+        } => {
+            let frequency_path = format!("{base}/eq/{band}/f");
+            let gain_path = format!("{base}/eq/{band}/g");
+            let q_path = format!("{base}/eq/{band}/q");
+            app.parameter_values
+                .insert(frequency_path.clone(), OscValue::Float(frequency));
+            app.parameter_values
+                .insert(gain_path.clone(), OscValue::Float(gain));
+            app.parameter_values
+                .insert(q_path.clone(), OscValue::Float(q));
+            let Some(mixer_addr) = app.mixer_addr else {
+                return Task::none();
+            };
+            Task::batch([
+                spawn_set_parameter(mixer_addr, frequency_path, OscValue::Float(frequency)),
+                spawn_set_parameter(mixer_addr, gain_path, OscValue::Float(gain)),
+                spawn_set_parameter(mixer_addr, q_path, OscValue::Float(q)),
+            ])
+        }
         Message::ParameterSetFinished(result) => {
             if let Err(error) = result {
                 app.last_error = Some(error);
@@ -480,6 +525,10 @@ pub fn update_mixer(app: &mut StatusApp, message: Message) -> Task<Message> {
             {
                 return task;
             }
+            Task::none()
+        }
+        Message::FxSlotSelected(slot) => {
+            app.selected_fx_slot = slot.clamp(1, 8);
             Task::none()
         }
         Message::NamesLoaded(result) => {

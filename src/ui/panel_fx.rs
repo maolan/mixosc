@@ -5,8 +5,9 @@ use crate::state::StatusApp;
 use crate::ui::format::*;
 use crate::ui::panel_routing::{detail_panel, top_panel_shell};
 use crate::ui::widgets::*;
+use crate::ui::x32_fx::{self, FxParameter, FxParameterKind};
 use maolan_widgets::horizontal_slider::horizontal_slider;
-use maolan_widgets::iced::widget::{column, row, scrollable, text};
+use maolan_widgets::iced::widget::{button, column, row, scrollable, text};
 use maolan_widgets::iced::{Color, Element, Length};
 
 pub(crate) fn main_detail_panel(app: &StatusApp) -> Element<'_, Message> {
@@ -196,6 +197,159 @@ pub(crate) fn fx_source_name(source: i32) -> &'static str {
         "MIX11", "MIX12", "MIX13", "MIX14", "MIX15", "MIX16", "M/C",
     ];
     SOURCES.get(source as usize).copied().unwrap_or("-")
+}
+
+fn x32_fx_detail_panel(app: &StatusApp) -> Element<'_, Message> {
+    let slot = app.selected_fx_slot.clamp(1, 8);
+    let slots = (1..=8).fold(row!().spacing(4), |row, slot_index| {
+        let fx_type = x32_fx::fx_type_name(
+            slot_index,
+            param_int(app, &format!("/fx/{slot_index:02}/type")),
+        );
+        let label = if slot_index == slot {
+            format!("> FX {slot_index}\n{fx_type}")
+        } else {
+            format!("FX {slot_index}\n{fx_type}")
+        };
+        row.push(
+            button(text(label).size(11))
+                .on_press(Message::FxSlotSelected(slot_index))
+                .padding([5, 10]),
+        )
+    });
+
+    let base = format!("/fx/{slot:02}");
+    let fx_type = param_int(app, &format!("{base}/type"));
+    let fx_name = x32_fx::fx_type_name(slot, fx_type);
+    let type_names = if slot <= 4 {
+        x32_fx::FX1_4_NAMES
+    } else {
+        x32_fx::FX5_8_NAMES
+    };
+    let mut settings = row![
+        column![
+            text("Effect").size(11),
+            enum_selector(
+                format!("{base}/type"),
+                fx_type,
+                type_names.iter().map(|name| (*name).to_owned()).collect(),
+            ),
+        ]
+        .width(Length::Fixed(180.0)),
+    ]
+    .spacing(8);
+
+    if slot <= 4 {
+        let source_names = (0..18).map(|index| fx_source_name(index).to_owned());
+        settings = settings.push(
+            column![
+                text("Source L").size(11),
+                enum_selector(
+                    format!("{base}/source/l"),
+                    param_int(app, &format!("{base}/source/l")),
+                    source_names.clone().collect(),
+                ),
+            ]
+            .width(Length::Fixed(130.0)),
+        );
+        settings = settings.push(
+            column![
+                text("Source R").size(11),
+                enum_selector(
+                    format!("{base}/source/r"),
+                    param_int(app, &format!("{base}/source/r")),
+                    source_names.collect(),
+                ),
+            ]
+            .width(Length::Fixed(130.0)),
+        );
+    }
+
+    let parameters: Element<'_, Message> = if let Some(definition) = x32_fx::fx_definition(fx_name)
+    {
+        definition
+            .parameters
+            .chunks(3)
+            .enumerate()
+            .fold(column!().spacing(8), |column, (chunk_index, chunk)| {
+                let controls = chunk.iter().enumerate().fold(
+                    row!().spacing(12),
+                    |row, (offset, parameter)| {
+                        let index = chunk_index * 3 + offset + 1;
+                        row.push(x32_fx_parameter_control(app, &base, index, parameter))
+                    },
+                );
+                column.push(controls)
+            })
+            .into()
+    } else {
+        text("No parameters available for this effect").into()
+    };
+
+    top_panel_shell(
+        column![
+            slots,
+            settings,
+            scrollable(parameters).height(Length::Fixed(280.0)),
+        ]
+        .spacing(10),
+    )
+}
+
+fn x32_fx_parameter_control<'a>(
+    app: &'a StatusApp,
+    base: &str,
+    index: usize,
+    parameter: &'a FxParameter,
+) -> Element<'a, Message> {
+    let path = format!("{base}/par/{index:02}");
+    let label = row![
+        text(parameter.name)
+            .size(11)
+            .width(Length::Fixed(100.0))
+            .color(Color::from_rgb8(0xC7, 0xC9, 0xD3)),
+    ]
+    .spacing(4);
+
+    match parameter.kind {
+        FxParameterKind::Enum(values) => row![
+            text(parameter.name)
+                .size(11)
+                .width(Length::Fixed(100.0))
+                .color(Color::from_rgb8(0xC7, 0xC9, 0xD3)),
+            enum_selector(
+                path,
+                param_int(app, &format!("{base}/par/{index:02}")),
+                values.iter().map(|value| (*value).to_owned()).collect(),
+            ),
+        ]
+        .spacing(4)
+        .width(Length::FillPortion(1))
+        .into(),
+        kind => {
+            let value = param_float(app, &path);
+            let name = parameter.name;
+            column![
+                row![
+                    label,
+                    text(kind.format(name, value))
+                        .size(11)
+                        .color(Color::from_rgb8(0xA9, 0xAC, 0xB3)),
+                ]
+                .spacing(4),
+                horizontal_slider(0.0..=1.0, value, move |next| {
+                    Message::ParameterChanged(path.clone(), OscValue::Float(next))
+                })
+                .fill_from_start()
+                .step(0.001)
+                .width(Length::Fill)
+                .height(Length::Fixed(14.0)),
+            ]
+            .spacing(2)
+            .width(Length::FillPortion(1))
+            .into()
+        }
+    }
 }
 
 pub(crate) fn fx_param_names(fx_name: &str) -> [&'static str; 8] {
@@ -460,6 +614,10 @@ pub(crate) fn fx_param_names(fx_name: &str) -> [&'static str; 8] {
 }
 
 pub(crate) fn fx_detail_panel(app: &StatusApp) -> Element<'_, Message> {
+    if app.mixer_model == MixerModel::X32 {
+        return x32_fx_detail_panel(app);
+    }
+
     let mut slots = row!().spacing(6);
     let fx_slots = if app.mixer_model == MixerModel::X32 {
         8
@@ -526,4 +684,24 @@ pub(crate) fn fx_detail_panel(app: &StatusApp) -> Element<'_, Message> {
             scrollable::Scrollbar::new(),
         )),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builds_controls_for_every_x32_effect_type() {
+        let mut app = StatusApp::default();
+        for (slot, names) in [(1, x32_fx::FX1_4_NAMES), (5, x32_fx::FX5_8_NAMES)] {
+            app.selected_fx_slot = slot;
+            for effect_type in 0..names.len() {
+                app.parameter_values.insert(
+                    format!("/fx/{slot:02}/type"),
+                    OscValue::Int(effect_type as i32),
+                );
+                let _ = x32_fx_detail_panel(&app);
+            }
+        }
+    }
 }

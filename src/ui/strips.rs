@@ -451,13 +451,8 @@ pub(crate) fn strip_mixer_top(
 pub(crate) fn gate_summary<'a>(app: &'a StatusApp, base: &str) -> Element<'a, Message> {
     let on = param_bool(app, &format!("{base}/gate/on"));
     let thr = param_float(app, &format!("{base}/gate/thr"));
-    let color = if on {
-        Color::from_rgb8(0x7D, 0xD3, 0xA7)
-    } else {
-        Color::from_rgb8(0x8E, 0x94, 0x9D)
-    };
     column![
-        text(if on { "ON" } else { "OFF" }).size(14).color(color),
+        param_toggle(if on { "ON" } else { "OFF" }, format!("{base}/gate/on"), on),
         text(format!("Thr: {thr:.1}"))
             .size(11)
             .color(Color::from_rgb8(0xA9, 0xAC, 0xB3)),
@@ -469,21 +464,9 @@ pub(crate) fn gate_summary<'a>(app: &'a StatusApp, base: &str) -> Element<'a, Me
 
 pub(crate) fn eq_summary<'a>(app: &'a StatusApp, base: &str, bands: u8) -> Element<'a, Message> {
     let on = param_bool(app, &format!("{base}/eq/on"));
-    let active = if on {
-        (1..=bands)
-            .filter(|b| param_bool(app, &format!("{base}/eq/{b:02}/on")))
-            .count()
-    } else {
-        0
-    };
-    let color = if on {
-        Color::from_rgb8(0x7D, 0xD3, 0xA7)
-    } else {
-        Color::from_rgb8(0x8E, 0x94, 0x9D)
-    };
     column![
-        text(if on { "ON" } else { "OFF" }).size(14).color(color),
-        text(format!("{active}/{bands} bands"))
+        param_toggle(if on { "ON" } else { "OFF" }, format!("{base}/eq/on"), on),
+        text(format!("{bands} bands"))
             .size(11)
             .color(Color::from_rgb8(0xA9, 0xAC, 0xB3)),
     ]
@@ -504,13 +487,8 @@ pub(crate) fn dyn_summary<'a>(app: &'a StatusApp, base: &str) -> Element<'a, Mes
         .get(ratio_idx as usize)
         .copied()
         .unwrap_or("?");
-    let color = if on {
-        Color::from_rgb8(0x7D, 0xD3, 0xA7)
-    } else {
-        Color::from_rgb8(0x8E, 0x94, 0x9D)
-    };
     column![
-        text(if on { "ON" } else { "OFF" }).size(14).color(color),
+        param_toggle(if on { "ON" } else { "OFF" }, format!("{base}/dyn/on"), on),
         text(format!("Thr: {thr:.1}"))
             .size(11)
             .color(Color::from_rgb8(0xA9, 0xAC, 0xB3)),

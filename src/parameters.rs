@@ -135,23 +135,23 @@ pub mod path {
     }
 
     pub fn auxin_eq_f(n1: u8, n2: u8) -> String {
-        format!("/auxin/{n1:02}/eq/{n2:02}/f")
+        format!("/auxin/{n1:02}/eq/{n2}/f")
     }
 
     pub fn auxin_eq_g(n1: u8, n2: u8) -> String {
-        format!("/auxin/{n1:02}/eq/{n2:02}/g")
+        format!("/auxin/{n1:02}/eq/{n2}/g")
     }
 
     pub fn auxin_eq_on(n1: u8, n2: u8) -> String {
-        format!("/auxin/{n1:02}/eq/{n2:02}/on")
+        format!("/auxin/{n1:02}/eq/{n2}/on")
     }
 
     pub fn auxin_eq_q(n1: u8, n2: u8) -> String {
-        format!("/auxin/{n1:02}/eq/{n2:02}/q")
+        format!("/auxin/{n1:02}/eq/{n2}/q")
     }
 
     pub fn auxin_eq_type(n1: u8, n2: u8) -> String {
-        format!("/auxin/{n1:02}/eq/{n2:02}/type")
+        format!("/auxin/{n1:02}/eq/{n2}/type")
     }
 
     pub fn auxin_eq_on_2(n1: u8) -> String {
@@ -303,23 +303,23 @@ pub mod path {
     }
 
     pub fn bus_eq_f(n1: u8, n2: u8) -> String {
-        format!("/bus/{n1:02}/eq/{n2:02}/f")
+        format!("/bus/{n1:02}/eq/{n2}/f")
     }
 
     pub fn bus_eq_g(n1: u8, n2: u8) -> String {
-        format!("/bus/{n1:02}/eq/{n2:02}/g")
+        format!("/bus/{n1:02}/eq/{n2}/g")
     }
 
     pub fn bus_eq_on(n1: u8, n2: u8) -> String {
-        format!("/bus/{n1:02}/eq/{n2:02}/on")
+        format!("/bus/{n1:02}/eq/{n2}/on")
     }
 
     pub fn bus_eq_q(n1: u8, n2: u8) -> String {
-        format!("/bus/{n1:02}/eq/{n2:02}/q")
+        format!("/bus/{n1:02}/eq/{n2}/q")
     }
 
     pub fn bus_eq_type(n1: u8, n2: u8) -> String {
-        format!("/bus/{n1:02}/eq/{n2:02}/type")
+        format!("/bus/{n1:02}/eq/{n2}/type")
     }
 
     pub fn bus_eq_on_2(n1: u8) -> String {
@@ -495,23 +495,23 @@ pub mod path {
     }
 
     pub fn ch_eq_f(n1: u8, n2: u8) -> String {
-        format!("/ch/{n1:02}/eq/{n2:02}/f")
+        format!("/ch/{n1:02}/eq/{n2}/f")
     }
 
     pub fn ch_eq_g(n1: u8, n2: u8) -> String {
-        format!("/ch/{n1:02}/eq/{n2:02}/g")
+        format!("/ch/{n1:02}/eq/{n2}/g")
     }
 
     pub fn ch_eq_on(n1: u8, n2: u8) -> String {
-        format!("/ch/{n1:02}/eq/{n2:02}/on")
+        format!("/ch/{n1:02}/eq/{n2}/on")
     }
 
     pub fn ch_eq_q(n1: u8, n2: u8) -> String {
-        format!("/ch/{n1:02}/eq/{n2:02}/q")
+        format!("/ch/{n1:02}/eq/{n2}/q")
     }
 
     pub fn ch_eq_type(n1: u8, n2: u8) -> String {
-        format!("/ch/{n1:02}/eq/{n2:02}/type")
+        format!("/ch/{n1:02}/eq/{n2}/type")
     }
 
     pub fn ch_eq_on_2(n1: u8) -> String {
@@ -971,23 +971,23 @@ pub mod path {
     }
 
     pub fn fxrtn_eq_f(n1: u8, n2: u8) -> String {
-        format!("/fxrtn/{n1:02}/eq/{n2:02}/f")
+        format!("/fxrtn/{n1:02}/eq/{n2}/f")
     }
 
     pub fn fxrtn_eq_g(n1: u8, n2: u8) -> String {
-        format!("/fxrtn/{n1:02}/eq/{n2:02}/g")
+        format!("/fxrtn/{n1:02}/eq/{n2}/g")
     }
 
     pub fn fxrtn_eq_on(n1: u8, n2: u8) -> String {
-        format!("/fxrtn/{n1:02}/eq/{n2:02}/on")
+        format!("/fxrtn/{n1:02}/eq/{n2}/on")
     }
 
     pub fn fxrtn_eq_q(n1: u8, n2: u8) -> String {
-        format!("/fxrtn/{n1:02}/eq/{n2:02}/q")
+        format!("/fxrtn/{n1:02}/eq/{n2}/q")
     }
 
     pub fn fxrtn_eq_type(n1: u8, n2: u8) -> String {
-        format!("/fxrtn/{n1:02}/eq/{n2:02}/type")
+        format!("/fxrtn/{n1:02}/eq/{n2}/type")
     }
 
     pub fn fxrtn_eq_on_2(n1: u8) -> String {
@@ -1123,23 +1123,23 @@ pub mod path {
     }
 
     pub fn main_m_eq_f(n1: u8) -> String {
-        format!("/main/m/eq/{n1:02}/f")
+        format!("/main/m/eq/{n1}/f")
     }
 
     pub fn main_m_eq_g(n1: u8) -> String {
-        format!("/main/m/eq/{n1:02}/g")
+        format!("/main/m/eq/{n1}/g")
     }
 
     pub fn main_m_eq_on(n1: u8) -> String {
-        format!("/main/m/eq/{n1:02}/on")
+        format!("/main/m/eq/{n1}/on")
     }
 
     pub fn main_m_eq_q(n1: u8) -> String {
-        format!("/main/m/eq/{n1:02}/q")
+        format!("/main/m/eq/{n1}/q")
     }
 
     pub fn main_m_eq_type(n1: u8) -> String {
-        format!("/main/m/eq/{n1:02}/type")
+        format!("/main/m/eq/{n1}/type")
     }
 
     pub fn main_m_eq_on_2() -> String {
@@ -1267,23 +1267,23 @@ pub mod path {
     }
 
     pub fn main_st_eq_f(n1: u8) -> String {
-        format!("/main/st/eq/{n1:02}/f")
+        format!("/main/st/eq/{n1}/f")
     }
 
     pub fn main_st_eq_g(n1: u8) -> String {
-        format!("/main/st/eq/{n1:02}/g")
+        format!("/main/st/eq/{n1}/g")
     }
 
     pub fn main_st_eq_on(n1: u8) -> String {
-        format!("/main/st/eq/{n1:02}/on")
+        format!("/main/st/eq/{n1}/on")
     }
 
     pub fn main_st_eq_q(n1: u8) -> String {
-        format!("/main/st/eq/{n1:02}/q")
+        format!("/main/st/eq/{n1}/q")
     }
 
     pub fn main_st_eq_type(n1: u8) -> String {
-        format!("/main/st/eq/{n1:02}/type")
+        format!("/main/st/eq/{n1}/type")
     }
 
     pub fn main_st_eq_on_2() -> String {
@@ -1415,23 +1415,23 @@ pub mod path {
     }
 
     pub fn mtx_eq_f(n1: u8, n2: u8) -> String {
-        format!("/mtx/{n1:02}/eq/{n2:02}/f")
+        format!("/mtx/{n1:02}/eq/{n2}/f")
     }
 
     pub fn mtx_eq_g(n1: u8, n2: u8) -> String {
-        format!("/mtx/{n1:02}/eq/{n2:02}/g")
+        format!("/mtx/{n1:02}/eq/{n2}/g")
     }
 
     pub fn mtx_eq_on(n1: u8, n2: u8) -> String {
-        format!("/mtx/{n1:02}/eq/{n2:02}/on")
+        format!("/mtx/{n1:02}/eq/{n2}/on")
     }
 
     pub fn mtx_eq_q(n1: u8, n2: u8) -> String {
-        format!("/mtx/{n1:02}/eq/{n2:02}/q")
+        format!("/mtx/{n1:02}/eq/{n2}/q")
     }
 
     pub fn mtx_eq_type(n1: u8, n2: u8) -> String {
-        format!("/mtx/{n1:02}/eq/{n2:02}/type")
+        format!("/mtx/{n1:02}/eq/{n2}/type")
     }
 
     pub fn mtx_eq_on_2(n1: u8) -> String {
@@ -1634,11 +1634,11 @@ impl ChannelParam {
             Self::DynRatio => format!("/ch/{strip:02}/dyn/ratio"),
             Self::DynRelease => format!("/ch/{strip:02}/dyn/release"),
             Self::DynThr => format!("/ch/{strip:02}/dyn/thr"),
-            Self::EqF { index } => format!("/ch/{strip:02}/eq/{index:02}/f"),
-            Self::EqG { index } => format!("/ch/{strip:02}/eq/{index:02}/g"),
-            Self::EqOn { index } => format!("/ch/{strip:02}/eq/{index:02}/on"),
-            Self::EqQ { index } => format!("/ch/{strip:02}/eq/{index:02}/q"),
-            Self::EqType { index } => format!("/ch/{strip:02}/eq/{index:02}/type"),
+            Self::EqF { index } => format!("/ch/{strip:02}/eq/{index}/f"),
+            Self::EqG { index } => format!("/ch/{strip:02}/eq/{index}/g"),
+            Self::EqOn { index } => format!("/ch/{strip:02}/eq/{index}/on"),
+            Self::EqQ { index } => format!("/ch/{strip:02}/eq/{index}/q"),
+            Self::EqType { index } => format!("/ch/{strip:02}/eq/{index}/type"),
             Self::GateAttack => format!("/ch/{strip:02}/gate/attack"),
             Self::GateFilterF => format!("/ch/{strip:02}/gate/filter/f"),
             Self::GateFilterOn => format!("/ch/{strip:02}/gate/filter/on"),
@@ -1742,11 +1742,11 @@ impl BusParam {
             Self::DynRatio => format!("/bus/{strip:02}/dyn/ratio"),
             Self::DynRelease => format!("/bus/{strip:02}/dyn/release"),
             Self::DynThr => format!("/bus/{strip:02}/dyn/thr"),
-            Self::EqF { index } => format!("/bus/{strip:02}/eq/{index:02}/f"),
-            Self::EqG { index } => format!("/bus/{strip:02}/eq/{index:02}/g"),
-            Self::EqOn { index } => format!("/bus/{strip:02}/eq/{index:02}/on"),
-            Self::EqQ { index } => format!("/bus/{strip:02}/eq/{index:02}/q"),
-            Self::EqType { index } => format!("/bus/{strip:02}/eq/{index:02}/type"),
+            Self::EqF { index } => format!("/bus/{strip:02}/eq/{index}/f"),
+            Self::EqG { index } => format!("/bus/{strip:02}/eq/{index}/g"),
+            Self::EqOn { index } => format!("/bus/{strip:02}/eq/{index}/on"),
+            Self::EqQ { index } => format!("/bus/{strip:02}/eq/{index}/q"),
+            Self::EqType { index } => format!("/bus/{strip:02}/eq/{index}/type"),
             Self::GrpDca => format!("/bus/{strip:02}/grp/dca"),
             Self::GrpMute => format!("/bus/{strip:02}/grp/mute"),
             Self::InsertOn => format!("/bus/{strip:02}/insert/on"),
@@ -1798,11 +1798,11 @@ impl AuxInParam {
             Self::ConfigIcon => format!("/auxin/{strip:02}/config/icon"),
             Self::ConfigName => format!("/auxin/{strip:02}/config/name"),
             Self::ConfigSource => format!("/auxin/{strip:02}/config/source"),
-            Self::EqF { index } => format!("/auxin/{strip:02}/eq/{index:02}/f"),
-            Self::EqG { index } => format!("/auxin/{strip:02}/eq/{index:02}/g"),
-            Self::EqOn { index } => format!("/auxin/{strip:02}/eq/{index:02}/on"),
-            Self::EqQ { index } => format!("/auxin/{strip:02}/eq/{index:02}/q"),
-            Self::EqType { index } => format!("/auxin/{strip:02}/eq/{index:02}/type"),
+            Self::EqF { index } => format!("/auxin/{strip:02}/eq/{index}/f"),
+            Self::EqG { index } => format!("/auxin/{strip:02}/eq/{index}/g"),
+            Self::EqOn { index } => format!("/auxin/{strip:02}/eq/{index}/on"),
+            Self::EqQ { index } => format!("/auxin/{strip:02}/eq/{index}/q"),
+            Self::EqType { index } => format!("/auxin/{strip:02}/eq/{index}/type"),
             Self::GrpDca => format!("/auxin/{strip:02}/grp/dca"),
             Self::GrpMute => format!("/auxin/{strip:02}/grp/mute"),
             Self::MixMevel { index } => format!("/auxin/{strip:02}/mix/{index:02}/mevel"),
@@ -1847,11 +1847,11 @@ impl FxRtnParam {
             Self::ConfigColor => format!("/fxrtn/{strip:02}/config/color"),
             Self::ConfigIcon => format!("/fxrtn/{strip:02}/config/icon"),
             Self::ConfigName => format!("/fxrtn/{strip:02}/config/name"),
-            Self::EqF { index } => format!("/fxrtn/{strip:02}/eq/{index:02}/f"),
-            Self::EqG { index } => format!("/fxrtn/{strip:02}/eq/{index:02}/g"),
-            Self::EqOn { index } => format!("/fxrtn/{strip:02}/eq/{index:02}/on"),
-            Self::EqQ { index } => format!("/fxrtn/{strip:02}/eq/{index:02}/q"),
-            Self::EqType { index } => format!("/fxrtn/{strip:02}/eq/{index:02}/type"),
+            Self::EqF { index } => format!("/fxrtn/{strip:02}/eq/{index}/f"),
+            Self::EqG { index } => format!("/fxrtn/{strip:02}/eq/{index}/g"),
+            Self::EqOn { index } => format!("/fxrtn/{strip:02}/eq/{index}/on"),
+            Self::EqQ { index } => format!("/fxrtn/{strip:02}/eq/{index}/q"),
+            Self::EqType { index } => format!("/fxrtn/{strip:02}/eq/{index}/type"),
             Self::GrpDca => format!("/fxrtn/{strip:02}/grp/dca"),
             Self::GrpMute => format!("/fxrtn/{strip:02}/grp/mute"),
             Self::MixLevel { index } => format!("/fxrtn/{strip:02}/mix/{index:02}/level"),
@@ -1923,11 +1923,11 @@ impl MtxParam {
             Self::DynRatio => format!("/mtx/{strip:02}/dyn/ratio"),
             Self::DynRelease => format!("/mtx/{strip:02}/dyn/release"),
             Self::DynThr => format!("/mtx/{strip:02}/dyn/thr"),
-            Self::EqF { index } => format!("/mtx/{strip:02}/eq/{index:02}/f"),
-            Self::EqG { index } => format!("/mtx/{strip:02}/eq/{index:02}/g"),
-            Self::EqOn { index } => format!("/mtx/{strip:02}/eq/{index:02}/on"),
-            Self::EqQ { index } => format!("/mtx/{strip:02}/eq/{index:02}/q"),
-            Self::EqType { index } => format!("/mtx/{strip:02}/eq/{index:02}/type"),
+            Self::EqF { index } => format!("/mtx/{strip:02}/eq/{index}/f"),
+            Self::EqG { index } => format!("/mtx/{strip:02}/eq/{index}/g"),
+            Self::EqOn { index } => format!("/mtx/{strip:02}/eq/{index}/on"),
+            Self::EqQ { index } => format!("/mtx/{strip:02}/eq/{index}/q"),
+            Self::EqType { index } => format!("/mtx/{strip:02}/eq/{index}/type"),
             Self::InsertOn => format!("/mtx/{strip:02}/insert/on"),
             Self::InsertPos => format!("/mtx/{strip:02}/insert/pos"),
             Self::InsertSel => format!("/mtx/{strip:02}/insert/sel"),
@@ -2053,10 +2053,10 @@ impl MainStereoParam {
             Self::Ratio => String::from("/main/st/dyn/ratio"),
             Self::Release => String::from("/main/st/dyn/release"),
             Self::Thr => String::from("/main/st/dyn/thr"),
-            Self::F { index } => format!("/main/st/eq/{index:02}/f"),
-            Self::G { index } => format!("/main/st/eq/{index:02}/g"),
-            Self::Q { index } => format!("/main/st/eq/{index:02}/q"),
-            Self::Type { index } => format!("/main/st/eq/{index:02}/type"),
+            Self::F { index } => format!("/main/st/eq/{index}/f"),
+            Self::G { index } => format!("/main/st/eq/{index}/g"),
+            Self::Q { index } => format!("/main/st/eq/{index}/q"),
+            Self::Type { index } => format!("/main/st/eq/{index}/type"),
             Self::Sel => String::from("/main/st/insert/sel"),
             Self::Level { index } => format!("/main/st/mix/{index:02}/level"),
             Self::Pan { index } => format!("/main/st/mix/{index:02}/pan"),
@@ -2122,10 +2122,10 @@ impl MainMonoParam {
             Self::Ratio => String::from("/main/m/dyn/ratio"),
             Self::Release => String::from("/main/m/dyn/release"),
             Self::Thr => String::from("/main/m/dyn/thr"),
-            Self::F { index } => format!("/main/m/eq/{index:02}/f"),
-            Self::G { index } => format!("/main/m/eq/{index:02}/g"),
-            Self::Q { index } => format!("/main/m/eq/{index:02}/q"),
-            Self::Type { index } => format!("/main/m/eq/{index:02}/type"),
+            Self::F { index } => format!("/main/m/eq/{index}/f"),
+            Self::G { index } => format!("/main/m/eq/{index}/g"),
+            Self::Q { index } => format!("/main/m/eq/{index}/q"),
+            Self::Type { index } => format!("/main/m/eq/{index}/type"),
             Self::Sel => String::from("/main/m/insert/sel"),
             Self::Level { index } => format!("/main/m/mix/{index:02}/level"),
             Self::Pan { index } => format!("/main/m/mix/{index:02}/pan"),

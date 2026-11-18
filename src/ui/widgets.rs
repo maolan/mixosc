@@ -6,7 +6,7 @@ use maolan_widgets::horizontal_slider::horizontal_slider;
 use maolan_widgets::iced::widget::{
     Space, button, canvas,
     canvas::{Geometry, Path, Text},
-    column, row, text,
+    column, pick_list, row, text,
 };
 use maolan_widgets::iced::{
     Background, Border, Color, Element, Length, Point, Rectangle, Renderer, Theme, mouse,
@@ -201,6 +201,16 @@ pub(crate) fn param_slider_labeled<'a>(
     value: f32,
     format_fn: fn(f32) -> String,
 ) -> Element<'a, Message> {
+    param_slider_labeled_step(label, path, value, 0.01, format_fn)
+}
+
+pub(crate) fn param_slider_labeled_step<'a>(
+    label: &'a str,
+    path: String,
+    value: f32,
+    step: f32,
+    format_fn: fn(f32) -> String,
+) -> Element<'a, Message> {
     column![
         row![
             text(label)
@@ -216,11 +226,26 @@ pub(crate) fn param_slider_labeled<'a>(
             Message::ParameterChanged(path.clone(), OscValue::Float(next))
         })
         .fill_from_start()
-        .step(0.01)
+        .step(step)
         .width(Length::Fill)
         .height(Length::Fixed(16.0)),
     ]
     .spacing(2)
+    .into()
+}
+
+pub(crate) fn enum_selector(
+    path: String,
+    current: i32,
+    names: Vec<String>,
+) -> Element<'static, Message> {
+    let selected = names.get(current as usize).cloned();
+    let options = names.clone();
+    pick_list(options, selected, move |selected| {
+        let value = names.iter().position(|name| name == &selected).unwrap_or(0) as i32;
+        Message::ParameterChanged(path.clone(), OscValue::Int(value))
+    })
+    .width(Length::Fill)
     .into()
 }
 

@@ -2,6 +2,7 @@ use crate::message::{Message, SelectedStrip};
 use crate::model::{FaderTarget, GainSource, MixerModel};
 use crate::parameters::OscValue;
 use crate::state::StatusApp;
+use crate::ui::eq_graph::eq_graph;
 use crate::ui::format::*;
 use crate::ui::panel_routing::{channel_send_row, detail_panel, top_panel_shell};
 use crate::ui::strips::*;
@@ -554,7 +555,6 @@ pub(crate) fn gate_detail_panel(app: &StatusApp) -> Element<'_, Message> {
         Some(OscValue::Int(v)) => *v,
         _ => 3,
     };
-    let auto = param_bool(app, &format!("{base}/gate/auto"));
     let keysrc = match app.parameter_values.get(&format!("{base}/gate/keysrc")) {
         Some(OscValue::Int(v)) => *v,
         _ => 0,
@@ -574,40 +574,46 @@ pub(crate) fn gate_detail_panel(app: &StatusApp) -> Element<'_, Message> {
             "Gate",
             column![
                 param_toggle("On", format!("{base}/gate/on"), on),
-                cycle_button(
-                    "Mode",
-                    format!("{base}/gate/mode"),
-                    mode,
-                    &["EXP2", "EXP3", "EXP4", "GATE", "DUCK"]
-                ),
-                param_toggle("Auto", format!("{base}/gate/auto"), auto),
-                param_slider_labeled(
+                row![
+                    text("Mode").size(11).width(Length::Fixed(40.0)),
+                    enum_selector(
+                        format!("{base}/gate/mode"),
+                        mode,
+                        ["EXP2", "EXP3", "EXP4", "GATE", "DUCK"]
+                            .map(str::to_owned)
+                            .to_vec(),
+                    ),
+                ]
+                .spacing(4)
+                .align_y(maolan_widgets::iced::Alignment::Center),
+                param_slider_labeled_step(
                     "Threshold",
                     format!("{base}/gate/thr"),
                     thr,
+                    1.0 / 160.0,
                     |v| format_db1(linf_value(v, -80.0, 0.0))
                 ),
-                param_slider_labeled(
+                param_slider_labeled_step(
                     "Range",
                     format!("{base}/gate/range"),
                     range,
+                    1.0 / 57.0,
                     |v| format_db1(linf_value(v, 3.0, 60.0))
                 ),
-                param_slider_labeled(
-                    "Keysrc",
-                    format!("{base}/gate/keysrc"),
-                    keysrc as f32 / 66.0,
-                    |v| key_source_name((v * 66.0) as i32)
-                ),
+                key_source_control(app, &base, "gate", keysrc),
             ]
             .spacing(6)
         ),
         detail_panel(
             "Envelope",
             column![
-                param_slider_labeled("Attack", format!("{base}/gate/attack"), attack, |v| {
-                    format_ms(linf_value(v, 0.0, 120.0))
-                }),
+                param_slider_labeled_step(
+                    "Attack",
+                    format!("{base}/gate/attack"),
+                    attack,
+                    1.0 / 120.0,
+                    |v| format_ms(linf_value(v, 0.0, 120.0)),
+                ),
                 param_slider_labeled("Hold", format!("{base}/gate/hold"), hold, |v| format_ms(
                     logf_value(v, 0.02, 2000.0)
                 )),
@@ -636,6 +642,38 @@ pub(crate) fn gate_detail_panel(app: &StatusApp) -> Element<'_, Message> {
             .spacing(6)
         ),
     ])
+}
+
+fn key_source_control<'a>(
+    app: &'a StatusApp,
+    base: &str,
+    section: &str,
+    current: i32,
+) -> Element<'a, Message> {
+    if app.mixer_model == MixerModel::X32 {
+        return row![
+            text("Keysrc")
+                .size(11)
+                .width(Length::Fixed(40.0))
+                .color(Color::from_rgb8(0xC7, 0xC9, 0xD3)),
+            enum_selector(
+                format!("{base}/{section}/keysrc"),
+                current,
+                (0..=64).map(key_source_name).collect(),
+            ),
+        ]
+        .spacing(4)
+        .align_y(maolan_widgets::iced::Alignment::Center)
+        .into();
+    }
+
+    param_slider_labeled_step(
+        "Keysrc",
+        format!("{base}/{section}/keysrc"),
+        current as f32 / 64.0,
+        1.0 / 64.0,
+        |value| key_source_name((value * 64.0).round() as i32),
+    )
 }
 
 pub(crate) fn dyn_detail_panel(app: &StatusApp) -> Element<'_, Message> {
@@ -770,12 +808,7 @@ pub(crate) fn dyn_detail_panel_for_base<'a>(
                     format_ms(logf_value(v, 5.0, 4000.0))
                 }),
                 param_toggle("Post", format!("{base}/dyn/pos"), pos),
-                param_slider_labeled(
-                    "Keysrc",
-                    format!("{base}/dyn/keysrc"),
-                    keysrc as f32 / 66.0,
-                    |v| key_source_name((v * 66.0) as i32)
-                ),
+                key_source_control(app, &base, "dyn", keysrc),
             ]
             .spacing(6)
         ),
@@ -848,26 +881,43 @@ pub(crate) fn eq_detail_panel_for_base<'a>(
     let bands_row: Element<'_, Message> = {
         let mut row = row!().spacing(6);
         for band in 1..=bands {
-            let band_base = format!("{base}/eq/{band:02}");
+            let band_base = format!("{base}/eq/{band}");
             let f = param_float(app, &format!("{band_base}/f"));
             let g = param_float(app, &format!("{band_base}/g"));
             let q = param_float(app, &format!("{band_base}/q"));
-            let on = param_bool(app, &format!("{band_base}/on"));
+            let band_type = param_int(app, &format!("{band_base}/type"));
+            let type_names: &[&str] = if bands == 6 && !base.starts_with("/bus/") {
+                &[
+                    "LCut", "LShv", "PEQ", "VEQ", "HShv", "HCut", "BU6", "BU12", "BS12", "LR12",
+                    "BU18", "BU24", "BS24", "LR24",
+                ]
+            } else {
+                &["LCut", "LShv", "PEQ", "VEQ", "HShv", "HCut"]
+            };
 
             let col = column![
                 text(format!("Band {band}"))
                     .size(11)
                     .color(Color::from_rgb8(0xC7, 0xC9, 0xD3)),
-                param_toggle("On", format!("{band_base}/on"), on),
-                param_slider_labeled("Freq", format!("{band_base}/f"), f, |v| format_hz(
-                    logf_value(v, 20.0, 20000.0)
-                )),
+                row![
+                    text("Type").size(11).width(Length::Fixed(40.0)),
+                    enum_selector(
+                        format!("{band_base}/type"),
+                        band_type,
+                        type_names.iter().map(|name| (*name).to_owned()).collect(),
+                    ),
+                ]
+                .spacing(4)
+                .align_y(maolan_widgets::iced::Alignment::Center),
+                param_slider_labeled_step("Freq", format!("{band_base}/f"), f, 0.005, |v| {
+                    format_hz(logf_value(v, 20.0, 20000.0))
+                },),
                 param_slider_labeled("Gain", format!("{band_base}/g"), g, |v| format_db(
                     linf_value(v, -15.0, 15.0)
                 )),
-                param_slider_labeled("Q", format!("{band_base}/q"), q, |v| format_q(logf_value(
-                    v, 10.0, 0.3
-                ))),
+                param_slider_labeled_step("Q", format!("{band_base}/q"), q, 1.0 / 71.0, |v| {
+                    format_q(logf_value(v, 10.0, 0.3))
+                }),
             ]
             .spacing(3)
             .width(Length::FillPortion(1));
@@ -881,6 +931,10 @@ pub(crate) fn eq_detail_panel_for_base<'a>(
             row![eq_toggle, text("Equalizer").size(14)]
                 .spacing(12)
                 .align_y(maolan_widgets::iced::Alignment::Center),
+            eq_graph(app, base.clone(), bands),
+            text("Drag: frequency/gain · wheel: Q · double-click: reset band")
+                .size(11)
+                .color(Color::from_rgb8(0x8E, 0x94, 0x9D)),
             bands_row,
         ]
         .spacing(12),
