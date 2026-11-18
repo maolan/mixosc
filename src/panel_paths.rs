@@ -5,6 +5,32 @@ use crate::ui::format::*;
 use crate::ui::panel_channel::eq_band_count;
 
 pub(crate) fn panel_parameter_paths(app: &StatusApp) -> Option<Vec<String>> {
+    if app.active_view == AppView::Fx {
+        let fx_slots = if app.mixer_model == MixerModel::X32 {
+            8
+        } else {
+            4
+        };
+        let parameter_count = if app.mixer_model == MixerModel::X32 {
+            64
+        } else {
+            8
+        };
+        let mut paths = Vec::new();
+        for slot in 1..=fx_slots {
+            let fx_base = format!("/fx/{slot:02}");
+            paths.push(format!("{fx_base}/type"));
+            if slot <= 4 {
+                paths.push(format!("{fx_base}/source/l"));
+                paths.push(format!("{fx_base}/source/r"));
+            }
+            for par in 1..=parameter_count {
+                paths.push(format!("{fx_base}/par/{par:02}"));
+            }
+        }
+        return Some(paths);
+    }
+
     let selected = app.selected_strip?;
     let (index, target, base) = match selected {
         SelectedStrip::Strip(index) => {
@@ -17,10 +43,10 @@ pub(crate) fn panel_parameter_paths(app: &StatusApp) -> Option<Vec<String>> {
                 AppView::Eq => {
                     let mut p = vec![format!("{base}/eq/on")];
                     for band in 1..=6 {
-                        p.push(format!("{base}/eq/{band:02}/on"));
-                        p.push(format!("{base}/eq/{band:02}/f"));
-                        p.push(format!("{base}/eq/{band:02}/g"));
-                        p.push(format!("{base}/eq/{band:02}/q"));
+                        p.push(format!("{base}/eq/{band}/type"));
+                        p.push(format!("{base}/eq/{band}/f"));
+                        p.push(format!("{base}/eq/{band}/g"));
+                        p.push(format!("{base}/eq/{band}/q"));
                     }
                     Some(p)
                 }
@@ -86,6 +112,39 @@ pub(crate) fn panel_parameter_paths(app: &StatusApp) -> Option<Vec<String>> {
     };
 
     let paths: Vec<String> = match app.active_view {
+        AppView::Channel => {
+            let mut paths = Vec::new();
+            if matches!(target, FaderTarget::Channel(_)) {
+                paths.push(format!("{base}/gate/on"));
+                paths.push(format!("{base}/gate/thr"));
+            }
+            let bands = eq_band_count(target);
+            if bands > 0 {
+                paths.push(format!("{base}/eq/on"));
+            }
+            if !matches!(
+                target,
+                FaderTarget::Aux(_) | FaderTarget::FxRtn(_) | FaderTarget::Dca(_)
+            ) {
+                paths.push(format!("{base}/dyn/on"));
+                paths.push(format!("{base}/dyn/thr"));
+                paths.push(format!("{base}/dyn/ratio"));
+            }
+            if matches!(
+                target,
+                FaderTarget::Channel(_)
+                    | FaderTarget::Aux(_)
+                    | FaderTarget::FxRtn(_)
+                    | FaderTarget::Bus(_)
+            ) {
+                paths.push(format!("{base}/grp/dca"));
+                paths.push(format!("{base}/grp/mute"));
+            }
+            if paths.is_empty() {
+                return None;
+            }
+            paths
+        }
         AppView::Eq => {
             let bands = eq_band_count(target);
             if bands == 0 {
@@ -93,10 +152,10 @@ pub(crate) fn panel_parameter_paths(app: &StatusApp) -> Option<Vec<String>> {
             }
             let mut p = vec![format!("{base}/eq/on")];
             for band in 1..=bands {
-                p.push(format!("{base}/eq/{band:02}/on"));
-                p.push(format!("{base}/eq/{band:02}/f"));
-                p.push(format!("{base}/eq/{band:02}/g"));
-                p.push(format!("{base}/eq/{band:02}/q"));
+                p.push(format!("{base}/eq/{band}/type"));
+                p.push(format!("{base}/eq/{band}/f"));
+                p.push(format!("{base}/eq/{band}/g"));
+                p.push(format!("{base}/eq/{band}/q"));
             }
             p
         }
@@ -107,7 +166,6 @@ pub(crate) fn panel_parameter_paths(app: &StatusApp) -> Option<Vec<String>> {
             vec![
                 format!("{base}/gate/on"),
                 format!("{base}/gate/mode"),
-                format!("{base}/gate/auto"),
                 format!("{base}/gate/thr"),
                 format!("{base}/gate/range"),
                 format!("{base}/gate/attack"),
@@ -315,28 +373,79 @@ pub(crate) fn panel_parameter_paths(app: &StatusApp) -> Option<Vec<String>> {
             }
             p
         }
-        AppView::Fx => {
-            let mut p = Vec::new();
-            let fx_slots = if app.mixer_model == MixerModel::X32 {
-                8
-            } else {
-                4
-            };
-            for slot in 1..=fx_slots {
-                let fx_base = format!("/fx/{slot:02}");
-                p.push(format!("{fx_base}/type"));
-                if slot <= 4 {
-                    p.push(format!("{fx_base}/source/l"));
-                    p.push(format!("{fx_base}/source/r"));
-                }
-                for par in 1..=8 {
-                    p.push(format!("{fx_base}/par/{par:02}"));
-                }
-            }
-            p
-        }
         _ => return None,
     };
 
     Some(paths)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn x32_fx_loads_every_parameter_even_with_master_selected() {
+        let app = StatusApp {
+            active_view: AppView::Fx,
+            selected_strip: Some(SelectedStrip::Master),
+            ..Default::default()
+        };
+
+        let paths = panel_parameter_paths(&app).expect("FX parameter paths");
+
+        assert_eq!(paths.len(), 528);
+        assert!(paths.contains(&"/fx/01/source/l".to_owned()));
+        assert!(paths.contains(&"/fx/08/par/64".to_owned()));
+    }
+
+    #[test]
+    fn channel_view_loads_aux_eq_and_sends_integer_enable() {
+        let app = StatusApp {
+            active_view: AppView::Channel,
+            selected_strip: Some(SelectedStrip::Strip(32)),
+            ..Default::default()
+        };
+
+        let paths = panel_parameter_paths(&app).expect("Channel parameter paths");
+
+        assert!(paths.contains(&"/auxin/01/eq/on".to_owned()));
+        assert!(!paths.contains(&"/auxin/01/eq/1/on".to_owned()));
+        assert!(!paths.contains(&"/auxin/01/eq/4/on".to_owned()));
+        assert!(!paths.iter().any(|path| path.contains("/dyn/")));
+        assert_eq!(
+            crate::parameters::path::auxin_eq_f(1, 1),
+            "/auxin/01/eq/1/f"
+        );
+        assert_eq!(
+            crate::parameters::AuxInParam::EqQ { index: 4 }.path(1),
+            "/auxin/01/eq/4/q"
+        );
+
+        let packet = crate::parameters::build_set(
+            "/auxin/01/eq/on",
+            crate::parameters::OscValue::Bool(true),
+        );
+        assert_eq!(
+            crate::parameters::parse_osc_value(&packet),
+            Some((
+                "/auxin/01/eq/on".to_owned(),
+                crate::parameters::OscValue::Int(1),
+            ))
+        );
+    }
+
+    #[test]
+    fn master_eq_loads_band_types() {
+        let app = StatusApp {
+            active_view: AppView::Eq,
+            selected_strip: Some(SelectedStrip::Master),
+            ..Default::default()
+        };
+
+        let paths = panel_parameter_paths(&app).expect("EQ parameter paths");
+
+        assert_eq!(paths.len(), 25);
+        assert!(paths.contains(&"/main/st/eq/1/type".to_owned()));
+        assert!(paths.contains(&"/main/st/eq/6/type".to_owned()));
+    }
 }

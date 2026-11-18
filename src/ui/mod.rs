@@ -1,3 +1,4 @@
+pub(crate) mod eq_graph;
 pub(crate) mod format;
 pub(crate) mod nav;
 pub(crate) mod panel_channel;
@@ -7,3 +8,4 @@ pub(crate) mod panel_scenes;
 pub(crate) mod panel_setup;
 pub(crate) mod strips;
 pub(crate) mod widgets;
+pub(crate) mod x32_fx;

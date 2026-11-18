@@ -164,20 +164,20 @@ pub(crate) fn key_source_name(value: i32) -> String {
     match value {
         0 => "Self".to_owned(),
         1..=32 => format!("Ch {value:02}"),
-        33..=40 => format!("Aux {:02}", value - 32),
-        41 => "USB L".to_owned(),
-        42 => "USB R".to_owned(),
-        43..=50 => {
+        33..=38 => format!("Aux {:02}", value - 32),
+        39 => "USB L".to_owned(),
+        40 => "USB R".to_owned(),
+        41..=48 => {
             let names = [
                 "Fx1L", "Fx1R", "Fx2L", "Fx2R", "Fx3L", "Fx3R", "Fx4L", "Fx4R",
             ];
             names
-                .get((value - 43) as usize)
+                .get((value - 41) as usize)
                 .copied()
                 .unwrap_or("?")
                 .to_owned()
         }
-        51..=66 => format!("Bus {:02}", value - 50),
+        49..=64 => format!("Bus {:02}", value - 48),
         _ => format!("Src {value}"),
     }
 }
@@ -256,5 +256,17 @@ mod tests {
             assert!((x32_fader_db(normalized) - db).abs() < 0.001);
         }
         assert!((x32_fader_normalized_for_db(0.0) - 0.75).abs() < 0.001);
+    }
+
+    #[test]
+    fn x32_key_sources_use_documented_enum_indices() {
+        assert_eq!(key_source_name(0), "Self");
+        assert_eq!(key_source_name(32), "Ch 32");
+        assert_eq!(key_source_name(38), "Aux 06");
+        assert_eq!(key_source_name(39), "USB L");
+        assert_eq!(key_source_name(41), "Fx1L");
+        assert_eq!(key_source_name(48), "Fx4R");
+        assert_eq!(key_source_name(49), "Bus 01");
+        assert_eq!(key_source_name(64), "Bus 16");
     }
 }
