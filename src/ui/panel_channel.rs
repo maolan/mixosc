@@ -4,6 +4,7 @@ use crate::parameters::OscValue;
 use crate::state::StatusApp;
 use crate::ui::eq_graph::eq_graph;
 use crate::ui::format::*;
+use crate::ui::panel_fx::x32_insert_fx_panel;
 use crate::ui::panel_routing::{channel_send_row, detail_panel, top_panel_shell};
 use crate::ui::strips::*;
 use crate::ui::widgets::*;
@@ -379,6 +380,9 @@ pub(crate) fn config_detail_panel_for_base<'a>(
             "Insert"
         };
         panels = panels.push(detail_panel(title, insert_col));
+        if let Some(fx_panel) = x32_insert_fx_panel(app, insert_sel) {
+            panels = panels.push(fx_panel);
+        }
     }
 
     if app.mixer_model == MixerModel::X32 && target == FaderTarget::Main {
@@ -395,6 +399,9 @@ pub(crate) fn config_detail_panel_for_base<'a>(
         ]
         .spacing(8);
         panels = panels.push(detail_panel("Insert M", insert_col));
+        if let Some(fx_panel) = x32_insert_fx_panel(app, insert_sel) {
+            panels = panels.push(fx_panel);
+        }
     }
 
     if let FaderTarget::Channel(ch) = target {

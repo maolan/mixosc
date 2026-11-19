@@ -186,10 +186,41 @@ pub fn parse_console_update(packet: &[u8]) -> Option<ConsoleUpdate> {
     }
 
     if let Some((path, value)) = crate::parameters::parse_osc_value(packet) {
-        return Some(ConsoleUpdate::Parameter { path, value });
+        return Some(ConsoleUpdate::Parameter {
+            path: normalize_fx_path(path),
+            value,
+        });
     }
 
     None
+}
+
+pub(crate) fn fx_query_path(path: &str) -> String {
+    let Some((slot, suffix)) = path
+        .strip_prefix("/fx/")
+        .and_then(|rest| rest.split_once('/'))
+    else {
+        return path.to_owned();
+    };
+    if slot.len() == 2 && slot.starts_with('0') && matches!(slot.as_bytes()[1], b'1'..=b'8') {
+        format!("/fx/{}/{suffix}", &slot[1..])
+    } else {
+        path.to_owned()
+    }
+}
+
+pub(crate) fn normalize_fx_path(path: String) -> String {
+    let Some((slot, suffix)) = path
+        .strip_prefix("/fx/")
+        .and_then(|rest| rest.split_once('/'))
+    else {
+        return path;
+    };
+    if slot.len() == 1 && matches!(slot.as_bytes()[0], b'1'..=b'8') {
+        format!("/fx/0{slot}/{suffix}")
+    } else {
+        path
+    }
 }
 
 fn target_from_channel_path(path: &str, suffix: &str) -> Option<FaderTarget> {

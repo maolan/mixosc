@@ -7,8 +7,10 @@ use crate::ui::panel_routing::{detail_panel, top_panel_shell};
 use crate::ui::widgets::*;
 use crate::ui::x32_fx::{self, FxParameter, FxParameterKind};
 use maolan_widgets::horizontal_slider::horizontal_slider;
-use maolan_widgets::iced::widget::{button, column, row, scrollable, text};
-use maolan_widgets::iced::{Color, Element, Length};
+use maolan_widgets::iced::widget::{button, column, container, row, scrollable, text};
+use maolan_widgets::iced::{Background, Border, Color, Element, Length, Theme};
+use maolan_widgets::knob::{Knob, knob};
+use maolan_widgets::multi_toggler::{LabelPosition, MultiToggler, Orientation};
 
 pub(crate) fn main_detail_panel(app: &StatusApp) -> Element<'_, Message> {
     let selected = app.selected_strip.unwrap_or(SelectedStrip::Strip(0));
@@ -265,34 +267,91 @@ fn x32_fx_detail_panel(app: &StatusApp) -> Element<'_, Message> {
         );
     }
 
-    let parameters: Element<'_, Message> = if let Some(definition) = x32_fx::fx_definition(fx_name)
-    {
-        definition
-            .parameters
-            .chunks(3)
-            .enumerate()
-            .fold(column!().spacing(8), |column, (chunk_index, chunk)| {
-                let controls = chunk.iter().enumerate().fold(
-                    row!().spacing(12),
-                    |row, (offset, parameter)| {
-                        let index = chunk_index * 3 + offset + 1;
-                        row.push(x32_fx_parameter_control(app, &base, index, parameter))
-                    },
-                );
-                column.push(controls)
-            })
-            .into()
-    } else {
-        text("No parameters available for this effect").into()
-    };
+    let parameters = x32_fx_parameter_controls(app, &base, fx_name);
 
     top_panel_shell(
         column![
             slots,
             settings,
-            scrollable(parameters).height(Length::Fixed(280.0)),
+            scrollable(parameters)
+                .width(Length::Shrink)
+                .height(Length::Fixed(280.0)),
         ]
         .spacing(10),
+    )
+}
+
+fn x32_fx_parameter_controls<'a>(
+    app: &'a StatusApp,
+    base: &str,
+    fx_name: &str,
+) -> Element<'a, Message> {
+    let Some(definition) = x32_fx::fx_definition(fx_name) else {
+        return text("No parameters available for this effect").into();
+    };
+    definition
+        .parameters
+        .chunks(3)
+        .enumerate()
+        .fold(column!().spacing(8), |column, (chunk_index, chunk)| {
+            let controls =
+                chunk
+                    .iter()
+                    .enumerate()
+                    .fold(row!().spacing(12), |row, (offset, parameter)| {
+                        let index = chunk_index * 3 + offset + 1;
+                        row.push(x32_fx_parameter_control(app, base, index, parameter))
+                    });
+            column.push(controls)
+        })
+        .into()
+}
+
+pub(crate) fn x32_insert_fx_panel(app: &StatusApp, insert: i32) -> Option<Element<'_, Message>> {
+    if app.mixer_model != MixerModel::X32 || !(1..=16).contains(&insert) {
+        return None;
+    }
+    let slot = (insert as u8).div_ceil(2);
+    let base = format!("/fx/{slot:02}");
+    let fx_type = param_int(app, &format!("{base}/type"));
+    let fx_name = x32_fx::fx_type_name(slot, fx_type);
+    let names = if slot <= 4 {
+        x32_fx::FX1_4_NAMES
+    } else {
+        x32_fx::FX5_8_NAMES
+    };
+    let effect = enum_selector(
+        format!("{base}/type"),
+        fx_type,
+        names.iter().map(|name| (*name).to_owned()).collect(),
+    );
+    let parameters = x32_fx_parameter_controls(app, &base, fx_name);
+    Some(
+        container(
+            column![
+                text(format!("Insert FX {slot} · {fx_name}"))
+                    .size(14)
+                    .color(Color::from_rgb8(0xC7, 0xC9, 0xD3)),
+                effect,
+                scrollable(parameters)
+                    .width(Length::Shrink)
+                    .height(Length::Fixed(200.0)),
+            ]
+            .spacing(8),
+        )
+        .style(|_theme: &Theme| container::Style {
+            background: Some(Background::Color(Color::from_rgb8(0x1A, 0x1A, 0x1C))),
+            border: Border {
+                color: Color::from_rgb8(0x4B, 0x4B, 0x4B),
+                width: 1.0,
+                radius: 0.0.into(),
+            },
+            ..Default::default()
+        })
+        .padding(10)
+        .width(Length::Shrink)
+        .height(Length::Fixed(280.0))
+        .into(),
     )
 }
 
@@ -303,15 +362,27 @@ fn x32_fx_parameter_control<'a>(
     parameter: &'a FxParameter,
 ) -> Element<'a, Message> {
     let path = format!("{base}/par/{index:02}");
-    let label = row![
-        text(parameter.name)
-            .size(11)
-            .width(Length::Fixed(100.0))
-            .color(Color::from_rgb8(0xC7, 0xC9, 0xD3)),
-    ]
-    .spacing(4);
 
     match parameter.kind {
+        FxParameterKind::Enum(values) if values == ["OFF", "ON"] => {
+            let selected = usize::try_from(param_int(app, &path).max(0)).unwrap_or_default();
+            column![
+                text(parameter.name).size(11),
+                MultiToggler::new(
+                    ["OFF", "ON"],
+                    selected,
+                    Orientation::Horizontal,
+                    move |selected| {
+                        Message::ParameterChanged(path.clone(), OscValue::Int(selected as i32))
+                    },
+                )
+                .label_position(LabelPosition::Below)
+                .text_size(10)
+                .size(14),
+            ]
+            .spacing(2)
+            .into()
+        }
         FxParameterKind::Enum(values) => row![
             text(parameter.name)
                 .size(11)
@@ -328,26 +399,19 @@ fn x32_fx_parameter_control<'a>(
         .into(),
         kind => {
             let value = param_float(app, &path);
-            let name = parameter.name;
-            column![
-                row![
-                    label,
-                    text(kind.format(name, value))
-                        .size(11)
-                        .color(Color::from_rgb8(0xA9, 0xAC, 0xB3)),
-                ]
-                .spacing(4),
-                horizontal_slider(0.0..=1.0, value, move |next| {
-                    Message::ParameterChanged(path.clone(), OscValue::Float(next))
-                })
-                .fill_from_start()
-                .step(0.001)
-                .width(Length::Fill)
-                .height(Length::Fixed(14.0)),
-            ]
-            .spacing(2)
-            .width(Length::FillPortion(1))
-            .into()
+            knob(
+                Knob {
+                    label: parameter.name.to_owned(),
+                    value,
+                    range: 0.0..=1.0,
+                    default: value,
+                    step: 0.001,
+                    value_text: kind.format(parameter.name, value),
+                    assigned: false,
+                },
+                move |next| Message::ParameterChanged(path.clone(), OscValue::Float(next)),
+                Message::ParameterSetFinished(Ok(())),
+            )
         }
     }
 }
