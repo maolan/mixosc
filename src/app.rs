@@ -169,6 +169,11 @@ pub fn update(app: &mut MixOscApp, message: Message) -> Task<Message> {
     }
 }
 
+fn should_load_insert_fx(app: &StatusApp, values: &[(String, OscValue)]) -> bool {
+    app.active_view == AppView::Config
+        && values.iter().any(|(path, _)| path.ends_with("/insert/sel"))
+}
+
 pub fn update_mixer(app: &mut StatusApp, message: Message) -> Task<Message> {
     match message {
         Message::Tick => Task::none(),
@@ -216,7 +221,13 @@ pub fn update_mixer(app: &mut StatusApp, message: Message) -> Task<Message> {
             let Some(mixer_addr) = app.mixer_addr else {
                 return Task::none();
             };
-            spawn_set_parameter(mixer_addr, path, value)
+            let set = spawn_set_parameter(mixer_addr, path.clone(), value);
+            if path.ends_with("/insert/sel")
+                && let Some(refresh) = spawn_load_panel_parameters(app, mixer_addr)
+            {
+                return Task::batch([set, refresh]);
+            }
+            set
         }
         Message::EqBandChanged {
             base,
@@ -270,6 +281,8 @@ pub fn update_mixer(app: &mut StatusApp, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::ParametersLoaded(result) => {
+            let load_insert_fx =
+                matches!(&result, Ok(values) if should_load_insert_fx(app, values));
             match result {
                 Ok(values) => {
                     for (path, value) in values {
@@ -277,6 +290,12 @@ pub fn update_mixer(app: &mut StatusApp, message: Message) -> Task<Message> {
                     }
                 }
                 Err(error) => app.last_error = Some(error),
+            }
+            if load_insert_fx
+                && let Some(mixer_addr) = app.mixer_addr
+                && let Some(task) = spawn_load_panel_parameters(app, mixer_addr)
+            {
+                return task;
             }
             Task::none()
         }
@@ -1318,5 +1337,26 @@ fn top_detail_panel(app: &StatusApp) -> Option<Element<'_, Message>> {
         AppView::Setup => Some(setup_detail_panel(app)),
         AppView::Routing => Some(routing_detail_panel(app)),
         AppView::Rta => Some(rta_detail_panel(app)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn insert_selection_triggers_one_dependent_fx_load() {
+        let mut app = StatusApp {
+            active_view: AppView::Config,
+            ..Default::default()
+        };
+        let insert_values = vec![("/ch/01/insert/sel".to_owned(), OscValue::Int(15))];
+        assert!(should_load_insert_fx(&app, &insert_values));
+
+        let fx_values = vec![("/fx/08/type".to_owned(), OscValue::Int(56))];
+        assert!(!should_load_insert_fx(&app, &fx_values));
+
+        app.active_view = AppView::Mixer;
+        assert!(!should_load_insert_fx(&app, &insert_values));
     }
 }

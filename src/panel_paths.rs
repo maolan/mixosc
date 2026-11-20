@@ -4,6 +4,23 @@ use crate::state::StatusApp;
 use crate::ui::format::*;
 use crate::ui::panel_channel::eq_band_count;
 
+fn append_insert_fx_paths(app: &StatusApp, paths: &mut Vec<String>, base: &str) {
+    if app.mixer_model != MixerModel::X32 {
+        return;
+    }
+    let insert = match app.parameter_values.get(&format!("{base}/insert/sel")) {
+        Some(crate::parameters::OscValue::Int(value)) => *value,
+        _ => 0,
+    };
+    if !(1..=16).contains(&insert) {
+        return;
+    }
+    let slot = (insert as u8).div_ceil(2);
+    let fx_base = format!("/fx/{slot:02}");
+    paths.push(format!("{fx_base}/type"));
+    paths.extend((1..=64).map(|parameter| format!("{fx_base}/par/{parameter:02}")));
+}
+
 pub(crate) fn panel_parameter_paths(app: &StatusApp) -> Option<Vec<String>> {
     if app.active_view == AppView::Fx {
         let fx_slots = if app.mixer_model == MixerModel::X32 {
@@ -72,6 +89,8 @@ pub(crate) fn panel_parameter_paths(app: &StatusApp) -> Option<Vec<String>> {
                         paths.push("/main/m/insert/pos".to_string());
                         paths.push("/main/m/insert/sel".to_string());
                     }
+                    append_insert_fx_paths(app, &mut paths, &base);
+                    append_insert_fx_paths(app, &mut paths, "/main/m");
                     Some(paths)
                 }
                 AppView::Sends => {
@@ -234,6 +253,7 @@ pub(crate) fn panel_parameter_paths(app: &StatusApp) -> Option<Vec<String>> {
                 p.push(format!("{base}/insert/on"));
                 p.push(format!("{base}/insert/pos"));
                 p.push(format!("{base}/insert/sel"));
+                append_insert_fx_paths(app, &mut p, &base);
             }
             if let FaderTarget::Channel(ch) = target {
                 let headamp_index = match app.gain_sources[index] {
@@ -432,6 +452,46 @@ mod tests {
                 crate::parameters::OscValue::Int(1),
             ))
         );
+    }
+
+    #[test]
+    fn config_loads_current_channel_insert_effect() {
+        let mut app = StatusApp {
+            active_view: AppView::Config,
+            selected_strip: Some(SelectedStrip::Strip(0)),
+            ..Default::default()
+        };
+        app.parameter_values.insert(
+            "/ch/01/insert/sel".to_owned(),
+            crate::parameters::OscValue::Int(16),
+        );
+
+        let paths = panel_parameter_paths(&app).expect("Config parameter paths");
+
+        assert!(paths.contains(&"/fx/08/type".to_owned()));
+        assert!(paths.contains(&"/fx/08/par/01".to_owned()));
+        assert!(paths.contains(&"/fx/08/par/64".to_owned()));
+        assert!(!paths.iter().any(|path| path.starts_with("/fx/07/")));
+    }
+
+    #[test]
+    fn config_loads_both_main_insert_effects() {
+        let mut app = StatusApp {
+            active_view: AppView::Config,
+            selected_strip: Some(SelectedStrip::Master),
+            ..Default::default()
+        };
+        for (path, insert) in [("/main/st/insert/sel", 1), ("/main/m/insert/sel", 3)] {
+            app.parameter_values
+                .insert(path.to_owned(), crate::parameters::OscValue::Int(insert));
+        }
+
+        let paths = panel_parameter_paths(&app).expect("Config parameter paths");
+
+        assert!(paths.contains(&"/fx/01/type".to_owned()));
+        assert!(paths.contains(&"/fx/01/par/64".to_owned()));
+        assert!(paths.contains(&"/fx/02/type".to_owned()));
+        assert!(paths.contains(&"/fx/02/par/64".to_owned()));
     }
 
     #[test]

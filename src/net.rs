@@ -804,7 +804,7 @@ impl ParameterProbe {
             .set_write_timeout(Some(self.timeout))
             .map_err(ProbeError::Configure)?;
 
-        let request = crate::parameters::build_get(path);
+        let request = crate::parameters::build_get(&crate::codec::x32::fx_query_path(path));
         socket
             .send_to(&request, self.target)
             .map_err(ProbeError::Send)?;
@@ -818,7 +818,9 @@ impl ParameterProbe {
             )));
         };
 
-        if reply_path != path {
+        if crate::codec::x32::normalize_fx_path(reply_path.clone())
+            != crate::codec::x32::normalize_fx_path(path.to_owned())
+        {
             return Err(ProbeError::Protocol(format!(
                 "received reply for '{reply_path}' while reading {path}"
             )));
@@ -871,7 +873,7 @@ impl ParameterProbe {
 
         let mut results = Vec::with_capacity(paths.len());
         for path in paths {
-            let request = crate::parameters::build_get(path);
+            let request = crate::parameters::build_get(&crate::codec::x32::fx_query_path(path));
             socket
                 .send_to(&request, self.target)
                 .map_err(ProbeError::Send)?;
@@ -883,8 +885,10 @@ impl ParameterProbe {
                 continue;
             };
 
-            if reply_path == *path {
-                results.push((reply_path, value));
+            if crate::codec::x32::normalize_fx_path(reply_path)
+                == crate::codec::x32::normalize_fx_path(path.clone())
+            {
+                results.push((path.clone(), value));
             }
         }
         Ok(results)
@@ -1389,6 +1393,58 @@ mod tests {
         assert_eq!(
             osc_query(&crate::codec::x32::fader_path(FaderTarget::Bus(1))),
             b"/bus/01/mix/fader\0\0\0".to_vec()
+        );
+    }
+
+    #[test]
+    fn batch_load_accepts_unpadded_x32_fx_replies() {
+        let socket = UdpSocket::bind("127.0.0.1:0").expect("bind test OSC server");
+        let address = socket.local_addr().expect("test OSC server address");
+        let server = std::thread::spawn(move || {
+            let mut buffer = [0_u8; 256];
+            let (received, client) = socket.recv_from(&mut buffer).expect("receive FX query");
+            assert_eq!(osc_address(&buffer[..received]), Some("/fx/1/type"));
+            socket
+                .send_to(&osc_int_message("/fx/1/type", 56), client)
+                .expect("send unpadded FX reply");
+        });
+
+        let values = ParameterProbe::new(address)
+            .with_timeout(Duration::from_secs(1))
+            .load_batch(&["/fx/01/type".to_owned()])
+            .expect("load FX type");
+        server.join().expect("join test OSC server");
+
+        assert_eq!(
+            values,
+            vec![(
+                "/fx/01/type".to_owned(),
+                crate::parameters::OscValue::Int(56),
+            )]
+        );
+    }
+
+    #[test]
+    fn normalizes_unpadded_x32_fx_console_updates() {
+        let type_update = parse_console_update(&osc_int_message("/fx/1/type", 56), MixerModel::X32)
+            .expect("should parse unpadded FX type update");
+        assert_eq!(
+            type_update,
+            ConsoleUpdate::Parameter {
+                path: "/fx/01/type".to_owned(),
+                value: crate::parameters::OscValue::Int(56),
+            }
+        );
+
+        let parameter_update =
+            parse_console_update(&osc_float_message("/fx/1/par/01", 0.5), MixerModel::X32)
+                .expect("should parse unpadded FX parameter update");
+        assert_eq!(
+            parameter_update,
+            ConsoleUpdate::Parameter {
+                path: "/fx/01/par/01".to_owned(),
+                value: crate::parameters::OscValue::Float(0.5),
+            }
         );
     }
 
