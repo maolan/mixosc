@@ -204,14 +204,22 @@ pub(crate) fn fx_source_name(source: i32) -> &'static str {
 fn x32_fx_detail_panel(app: &StatusApp) -> Element<'_, Message> {
     let slot = app.selected_fx_slot.clamp(1, 8);
     let slots = (1..=8).fold(row!().spacing(4), |row, slot_index| {
-        let fx_type = x32_fx::fx_type_name(
-            slot_index,
-            param_int(app, &format!("/fx/{slot_index:02}/type")),
-        );
         let label = if slot_index == slot {
-            format!("> FX {slot_index}\n{fx_type}")
+            format!(
+                "> FX {slot_index}\n{}",
+                x32_fx::fx_type_label(
+                    slot_index,
+                    param_int(app, &format!("/fx/{slot_index:02}/type"))
+                )
+            )
         } else {
-            format!("FX {slot_index}\n{fx_type}")
+            format!(
+                "FX {slot_index}\n{}",
+                x32_fx::fx_type_label(
+                    slot_index,
+                    param_int(app, &format!("/fx/{slot_index:02}/type"))
+                )
+            )
         };
         row.push(
             button(text(label).size(11))
@@ -234,7 +242,11 @@ fn x32_fx_detail_panel(app: &StatusApp) -> Element<'_, Message> {
             enum_selector(
                 format!("{base}/type"),
                 fx_type,
-                type_names.iter().map(|name| (*name).to_owned()).collect(),
+                type_names
+                    .iter()
+                    .enumerate()
+                    .map(|(index, _)| x32_fx::fx_type_label(slot, index as i32).to_owned())
+                    .collect(),
             ),
         ]
         .width(Length::Fixed(180.0)),
@@ -274,7 +286,7 @@ fn x32_fx_detail_panel(app: &StatusApp) -> Element<'_, Message> {
             slots,
             settings,
             scrollable(parameters)
-                .width(Length::Shrink)
+                .width(Length::Fill)
                 .height(Length::Fixed(280.0)),
         ]
         .spacing(10),
@@ -289,9 +301,11 @@ fn x32_fx_parameter_controls<'a>(
     let Some(definition) = x32_fx::fx_definition(fx_name) else {
         return text("No parameters available for this effect").into();
     };
+    const PARAMETERS_PER_ROW: usize = 8;
+
     definition
         .parameters
-        .chunks(3)
+        .chunks(PARAMETERS_PER_ROW)
         .enumerate()
         .fold(column!().spacing(8), |column, (chunk_index, chunk)| {
             let controls =
@@ -299,7 +313,7 @@ fn x32_fx_parameter_controls<'a>(
                     .iter()
                     .enumerate()
                     .fold(row!().spacing(12), |row, (offset, parameter)| {
-                        let index = chunk_index * 3 + offset + 1;
+                        let index = chunk_index * PARAMETERS_PER_ROW + offset + 1;
                         row.push(x32_fx_parameter_control(app, base, index, parameter))
                     });
             column.push(controls)
@@ -334,7 +348,7 @@ pub(crate) fn x32_insert_fx_panel(app: &StatusApp, insert: i32) -> Option<Elemen
                     .color(Color::from_rgb8(0xC7, 0xC9, 0xD3)),
                 effect,
                 scrollable(parameters)
-                    .width(Length::Shrink)
+                    .width(Length::Fill)
                     .height(Length::Fixed(200.0)),
             ]
             .spacing(8),
@@ -353,6 +367,15 @@ pub(crate) fn x32_insert_fx_panel(app: &StatusApp, insert: i32) -> Option<Elemen
         .height(Length::Fixed(280.0))
         .into(),
     )
+}
+
+fn normalized_fx_parameter(app: &StatusApp, path: &str) -> f32 {
+    let value = param_float(app, path);
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
 }
 
 fn x32_fx_parameter_control<'a>(
@@ -398,7 +421,7 @@ fn x32_fx_parameter_control<'a>(
         .width(Length::FillPortion(1))
         .into(),
         kind => {
-            let value = param_float(app, &path);
+            let value = normalized_fx_parameter(app, &path);
             knob(
                 Knob {
                     label: parameter.name.to_owned(),
@@ -753,6 +776,23 @@ pub(crate) fn fx_detail_panel(app: &StatusApp) -> Element<'_, Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fx_parameters_replace_non_finite_values_for_knob_rendering() {
+        let mut app = StatusApp::default();
+        for (value, expected) in [
+            (f32::NAN, 0.0),
+            (f32::INFINITY, 0.0),
+            (f32::NEG_INFINITY, 0.0),
+            (-1.0, 0.0),
+            (0.25, 0.25),
+            (2.0, 1.0),
+        ] {
+            app.parameter_values
+                .insert("/fx/01/par/01".to_owned(), OscValue::Float(value));
+            assert_eq!(normalized_fx_parameter(&app, "/fx/01/par/01"), expected);
+        }
+    }
 
     #[test]
     fn builds_controls_for_every_x32_effect_type() {
