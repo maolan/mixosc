@@ -1383,6 +1383,49 @@ pub(crate) fn fx_type_name(slot: u8, fx_type: i32) -> &'static str {
     names.get(fx_type as usize).copied().unwrap_or("UNKNOWN")
 }
 
+/// Human-readable effect names from the X32 OSC protocol reference.
+pub(crate) fn fx_type_label(slot: u8, fx_type: i32) -> &'static str {
+    match fx_type_name(slot, fx_type) {
+        "HALL" => "Hall Reverb",
+        "AMBI" => "Ambiance Reverb",
+        "RPLT" => "Rich Plate Reverb",
+        "ROOM" => "Room Reverb",
+        "CHAM" => "Chamber Reverb",
+        "PLAT" => "Plate Reverb",
+        "VREV" => "Vintage Reverb",
+        "GATE" => "Gated Reverb",
+        "DLY" => "Stereo Delay",
+        "3TAP" => "3-Tap Delay",
+        "4TAP" => "4-Tap Delay",
+        "CRS" => "Stereo Chorus",
+        "FLNG" => "Stereo Flanger",
+        "PHAS" => "Stereo Phaser",
+        "DIMC" => "Dimensional Chorus",
+        "FILT" => "Mood Filter",
+        "ROTA" => "Rotary Speaker",
+        "PAN" => "Tremolo / Panner",
+        "SUB" => "Suboctaver",
+        "D/RV" => "Delay / Chamber",
+        "CR/R" => "Chorus / Chamber",
+        "FL/R" => "Flanger / Chamber",
+        "D/CR" => "Delay / Chorus",
+        "D/FL" => "Delay / Flanger",
+        "MODD" => "Modulation Delay",
+        "GEQ2" => "Dual Graphic Equalizer / True Dual Graphic Equalizer",
+        "GEQ" => "Graphic Equalizer / True Graphic Equalizer",
+        "DES2" => "Stereo / Dual De-Esser",
+        "LIM" => "Precision Limiter",
+        "P1A" | "P1A2" => "Stereo / Dual Program EQ",
+        "PQ5" | "PQ5S" => "Stereo / Dual Midrange EQ",
+        "CMB" | "CMB2" => "Stereo / Dual Combinator",
+        "FAC" | "FAC1M" | "FAC2" => "Stereo / Dual Fair Compressor",
+        "LEC" | "LEC2" => "Stereo / Dual Leisure Compressor",
+        "EDI" => "Edison EX1",
+        "ULC" | "ULC2" => "Stereo / Dual Ultimo Compressor",
+        other => other,
+    }
+}
+
 pub(crate) fn fx_definition(name: &str) -> Option<&'static FxDefinition> {
     match name {
         "HALL" => Some(&HALL),
